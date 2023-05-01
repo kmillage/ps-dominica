@@ -1,0 +1,197 @@
+---
+title: "Dominica: Proposed Sperm Whale Reserve Boundaries"
+output: html_document
+date: "2023-05-01"
+---
+
+```{r setup, include=FALSE}
+source(here::here("common.R"))
+```
+
+# Introduction
+
+This script creates shapefiles of potential sperm whales reserves in Dominica according to the following conditions: 
+- The North boundary is defined by a line running perpendicular to shore at X degrees Latitude;
+- The East boundary is defined by the path traveled by the ferry running parallel to shore (NOTE - for now we will use a buffer from shore of X distance to mimic this. We will fix this later depending on the path traveled by the ferry);
+- The South boundary is defined by a line running perpendicular to shore at X degrees Latitude;
+- The West boundary is variable, defined by a line running parallel to shore at X-X degrees degrees Longitude.
+
+These shapefiles will be used in later scripts to identify the fraction of sperm whale sightings that occurred within each area, as well as the changes in cruise ship, . 
+
+# Set North Boundary
+
+```{r}
+# Assume North boundary to be set at 15.539520 deg N. Coordinates chosen based on the presence of a point at this latitude on land.  
+n_b_coord <- 15.539520
+```
+
+# Set South Boundary
+
+```{r}
+# Assume North boundary to be set at 15.241129 deg N. Coordinates chosen based on the presence of a point at this latitude on land. 
+s_b_coord <- 15.241129
+```
+
+
+# Set East Boundary
+
+```{r cars}
+# Get EEZ data (Marine Regions v11)
+eez_sf <- st_read(file.path(emlab_data_dir, "marine-regions-eez-v11", "World_EEZ_v11_20191118_gpkg", "eez_v11.gpkg")) %>%
+  janitor::clean_names() %>%
+  dplyr::select(mrgid,
+                eez_name = geoname,
+                eez_type = pol_type,
+                eez_ter1_name = territory1,
+                eez_ter1_iso3 = iso_ter1,
+                eez_sov1_name = sovereign1,
+                eez_ter2_name = territory2,
+                eez_ter2_iso3 = iso_ter2,
+                eez_sov2_name = sovereign2,
+                eez_ter3_name = territory3,
+                eez_ter3_iso3 = iso_ter3,
+                eez_sov3_name = sovereign3,
+                eez_area_km = area_km2)
+  #sf::st_transform(crs = st_crs(prj_moll)) # convert to Mollewide
+
+# Extract dominica EEZ boundaries
+dominica_eez_sf <- eez_sf %>%
+  dplyr::filter(mrgid == 8417)
+
+# Plot boundaries
+mb <- list(xmin = -61.7, xmax = -61.071977,
+        ymin = 15.142136, ymax = 15.690039)
+
+# Plot just ot make sure everything looks ok
+dominica_plot <- ggplot()+
+  geom_sf(data = dominica_eez_sf, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
+  coord_sf(xlim = c(mb$xmin, mb$xmax),
+           ylim = c(mb$ymin, mb$ymax))
+
+dominica_plot
+```
+
+```{r}
+# Now create fake bounding box to intersect with our EEZ area
+lon = c(-61.6, -61.35)
+lat = c(s_b_coord - 0.02, n_b_coord + 0.02)
+
+box_sf <- data.frame(lon, lat) %>% 
+  st_as_sf(coords = c("lon", "lat"), 
+           crs = "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0") %>% 
+  st_bbox() %>%
+  st_as_sfc()
+
+# Intersect with EEZ file
+dom_wc_box <- st_intersection(dominica_eez_sf, box_sf)
+
+# Plot - looking good
+test_plot <- ggplot()+
+  geom_sf(data = dom_wc_box, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
+  coord_sf(xlim = c(mb$xmin, mb$xmax),
+           ylim = c(mb$ymin, mb$ymax))
+
+test_plot
+```
+
+```{r}
+# Convert to mollewide
+dom_wc_box_moll <- dom_wc_box %>%
+  sf::st_transform(crs = st_crs(prj_moll)) # convert to Mollewide to make figuring distances easier
+
+# Now we need to buffer this so we move it offshore a bit. Let's start with 1km offshore
+dom_wc_box_moll_buff <- st_buffer(dom_wc_box_moll, -1000) # This distance should be in m
+
+# Plot - looking good
+test_plot2 <- ggplot()+
+  geom_sf(data = dom_wc_box_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
+  geom_sf(data = dom_wc_box_moll_buff, aes(group = mrgid), color = "black", fill = "lightblue2", size = 0.2)
+
+test_plot2
+```
+# Combine
+
+```{r}
+# Make another bounding box with North and South coordinates
+lat_actual <- c(s_b_coord, n_b_coord)
+
+box2_sf <- data.frame(lon, lat_actual) %>% 
+  st_as_sf(coords = c("lon", "lat_actual"), 
+           crs = "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0") %>% 
+  st_bbox() %>%
+  st_as_sfc() %>%
+  sf::st_transform(crs = st_crs(prj_moll))
+
+# Intersect with EEZ file
+dom_swr_v1 <- st_intersection(dom_wc_box_moll_buff, box2_sf)
+
+# Plot - looking good
+test_plot3 <- ggplot()+
+  geom_sf(data = dom_wc_box_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
+  geom_sf(data = dom_swr_v1, aes(group = mrgid), color = "black", fill = "orange", size = 0.2)
+
+test_plot3
+```
+# Vary West Boundary
+
+```{r}
+# For now, setting random western boundaries. We may want to adjust this to be based on some distance from the port? 
+w_b_coords <- c(-61.6, -61.56, -61.53)
+
+dom_swr_out <- NULL
+
+for(i in 1:length(w_b_coords)){
+  
+  lon_actual <- c(w_b_coords[i], lon[2])
+  
+  # Make box
+  box3_sf <- data.frame(lon_actual, lat_actual) %>% 
+    st_as_sf(coords = c("lon_actual", "lat_actual"),
+             crs = "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0") %>%
+    st_bbox() %>%
+    st_as_sfc() %>%
+    sf::st_transform(crs = st_crs(prj_moll))
+  
+  # Intersect with EEZ file
+  k <- st_intersection(dom_swr_v1, box3_sf) %>%
+    mutate(scenario = i) %>%
+    dplyr::select(scenario, geom)
+
+  # Keep
+  dom_swr_out <- dom_swr_out %>%
+    bind_rows(k)
+}
+
+# Map
+test_plot4 <- ggplot()+
+  geom_sf(data = dom_swr_out, aes(group = scenario, fill = scenario), color = "black", size = 0.2)
+
+test_plot4
+
+# Save
+save(dom_swr_out, file = file.path(here::here("results", "reserve_boundaries.Rdata")))
+```
+
+# Add Shipping Channel 
+
+We also need to incorporate a shipping channel bisecting the reserve that is 5 miles wild and directly perpendicular to Roseau. 
+
+```{r}
+# Central latitude/longitude of Roseau - directly between the commercial shipping terminal and the cruise ship berth. 
+roseau_moll <- data.frame(lon = c(-61.391959), lat = c(15.299277)) %>%
+  st_as_sf(coords = c("lon", "lat"),
+          crs = "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0") %>%
+  sf::st_transform(crs = st_crs(prj_moll))
+
+# Top and bottom of shipping lane - 2.5 nm north and south of point
+sl_moll <- roseau_moll %>%
+  st_coordinates() %>%
+  as.data.frame() %>%
+  mutate(Y_top = Y + 4630,
+         Y_bottom = Y - 4630)
+
+
+```
+
+
+

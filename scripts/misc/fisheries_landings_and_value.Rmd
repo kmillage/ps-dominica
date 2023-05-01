@@ -1,0 +1,83 @@
+---
+title: "Dominica: Fisheries Landings and Value from Publicly Available Data"
+output: html_document
+date: "2023-03-06"
+---
+
+```{r setup, include=FALSE}
+# Source common R file
+source(here::here("common.R"))
+
+# Load FAO Global Capture Production database and helper files
+fao_dat <- read_csv(file.path(emlab_data_dir, "fao-global-capture", "Capture_2021.1.2", "CAPTURE_QUANTITY.csv")) %>%
+  clean_names()
+
+country_lookup <- read_csv(file.path(emlab_data_dir, "fao-global-capture", "Capture_2021.1.2", "CL_FI_COUNTRY_GROUPS.csv")) %>%
+  clean_names()
+
+species_lookup <- read_csv(file.path(emlab_data_dir, "fao-global-capture", "Capture_2021.1.2", "CL_FI_SPECIES_GROUPS.csv")) %>%
+  clean_names() %>%
+  dplyr::select(species_alpha_3_code = x3a_code, species_taxonomic_code = taxonomic_code, species_name_en = name_en, scientific_name, major_group_en, yearbook_group_en, isscaap_group_en, cpc_class_en, cpc_group_en)
+```
+
+## Introduction
+
+This document provides a brief summary of fisheries landings and value from publicly available datasets. This document largely draws upon landings data from the [FAO global capture production database](https://www.fao.org/fishery/statistics-query/en/capture/capture_quantity) and the [Sea Around Us (SAU) database of reconstructed fisheries catches for Dominica](https://www.seaaroundus.org/data/#/eez/212?chart=catch-chart&dimension=taxon&measure=tonnage&limit=10). 
+## Reported Landings
+
+```{r}
+# Extract landings for Dominica
+dominica_dat <- country_lookup %>%
+  dplyr::filter(iso3_code == "DMA") %>%
+  dplyr::select(un_code, identifier, iso3_code, name_en) %>%
+  inner_join(fao_dat, by = c("un_code" = "country_un_code")) %>%
+  left_join(species_lookup, by = c("species_alpha_3_code"))
+
+# Get marine landings
+dominica_marine_dat <- dominica_dat %>%
+  dplyr::filter(area_code != "02") # Remove inland waters
+```
+
+Capture fisheries production reported to the FAO is available for Dominica between `{r} min(dominica_dat$period)` to `{r} max(dominica_dat$period)`. Total capture production in `{r} max(dominica_dat$period)` was reported to be `{r} sum(dominica_dat$value[dominica_dat$period == 2019], na.rm = T)` mt. Landings for the following species (or species categories) are reported: `{r} paste0(sort(unique(dominica_dat$species_name_en)), collapse = ", ")`.  
+
+Though inland (freshwater) production is reported of "Freshwater fishes nei", its magnitude is negligible (less than 1 mt per year) and thus appears as a zero in the FAO database. Therefore, marine production makes up the entirety of Dominica's reported capture production from the FAO database. 
+
+```{r cars}
+dominica_total_landings_plot <- dominica_marine_dat %>%
+  group_by(period, isscaap_group_en) %>%
+  summarize(value = sum(value, na.rm = T)) %>%
+  dplyr::filter(period >= 2000) %>%
+  bind_rows(tibble(period = 2001,
+                   isscaap_group_en = "Miscellaneous pelagic fishes",
+                   value = 0)) %>% # Clean up missing sliver in the data
+  ggplot()+
+  aes(x = period, y = value, fill = isscaap_group_en)+
+  geom_area()+
+  theme_basic()+
+  guides(fill = guide_legend(title = "ISSCAAP Group", nrow = 3))+
+  labs(x = "Year", y = "Total landed weight (mt)", title = "FAO marine capture production: Dominica (2000 - 2019)")
+
+dominica_total_landings_plot
+```
+
+## Reconstructed Landings
+
+```{r}
+sau_dat <- read_csv()
+```
+
+
+SAU 
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+## Notes
+
+In their anlysis of Dominica's fisheries data, Theophile (2015) found total landings calculated from national data to be higher than the values reported to the FAO between 1994 and 2013, especially for the period from 2005-2013. Both the national landings and FAO data were lower than the reconstructed values done by SAU (Ramdeen et al., 2014). 
+
+![Comparison between total fisheries landings for Dominica from different sources. Source: Fig. 9 from Theophile (2015).](./images/theophile_fig_9_.png)
+

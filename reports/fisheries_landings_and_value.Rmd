@@ -1,0 +1,349 @@
+---
+title: 'Dominica: Summary of fisheries landings and value from publicly available
+  data'
+output:
+  pdf_document: default
+  html_document: default
+date: "2023-03-07"
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+# Source common R file
+source(here::here("common.R"))
+
+# Load FAO Global Capture Production database and helper files
+fao_dat <- read_csv(file.path(emlab_data_dir, "fao-global-capture", "Capture_2021.1.2", "CAPTURE_QUANTITY.csv")) %>%
+  clean_names()
+
+country_lookup <- read_csv(file.path(emlab_data_dir, "fao-global-capture", "Capture_2021.1.2", "CL_FI_COUNTRY_GROUPS.csv")) %>%
+  clean_names()
+
+species_lookup <- read_csv(file.path(emlab_data_dir, "fao-global-capture", "Capture_2021.1.2", "CL_FI_SPECIES_GROUPS.csv")) %>%
+  clean_names() %>%
+  dplyr::select(species_alpha_3_code = x3a_code, species_taxonomic_code = taxonomic_code, species_name_en = name_en, scientific_name, major_group_en, yearbook_group_en, isscaap_group_en, cpc_class_en, cpc_group_en)
+```
+
+## Introduction
+
+This document provides a brief summary of Dominica's fisheries landings and value from publicly available datasets. This document largely draws upon landings data from the [FAO global capture production database](https://www.fao.org/fishery/statistics-query/en/capture/capture_quantity) and the [Sea Around Us (SAU) database of reconstructed fisheries catches](https://www.seaaroundus.org/data/#/eez/212?chart=catch-chart&dimension=taxon&measure=tonnage&limit=10). 
+
+## Reported landings
+
+```{r}
+# Extract landings for Dominica
+dominica_dat <- country_lookup %>%
+  dplyr::filter(iso3_code == "DMA") %>%
+  dplyr::select(un_code, identifier, iso3_code, name_en) %>%
+  inner_join(fao_dat, by = c("un_code" = "country_un_code")) %>%
+  left_join(species_lookup, by = c("species_alpha_3_code"))
+
+# Get marine landings
+dominica_marine_dat <- dominica_dat %>%
+  dplyr::filter(area_code != "02") # Remove inland waters
+```
+
+Capture fisheries production reported to the FAO is available for Dominica between `r min(dominica_dat$period)` to `r max(dominica_dat$period)`. Total capture production in `r max(dominica_dat$period)` was reported to be `r sum(dominica_dat$value[dominica_dat$period == 2019], na.rm = T)` mt. 
+
+Though inland (freshwater) production is reported of "Freshwater fishes nei", its magnitude is negligible (less than 1 mt per year) and thus appears as a zero in the FAO database. Therefore, marine production makes up the entirety of Dominica's reported capture production from the FAO database. 
+
+```{r fig.width=6, fig.cap="Total fisheries landings for Dominica by ISSCAAP group from FAO (2000 - 2019)."}
+dominica_isscaap_landings_plot <- dominica_marine_dat %>%
+  group_by(period, isscaap_group_en) %>%
+  summarize(value = sum(value, na.rm = T)) %>%
+  dplyr::filter(period >= 2000) %>%
+  bind_rows(tibble(period = 2001,
+                   isscaap_group_en = "Miscellaneous pelagic fishes",
+                   value = 0)) %>% # Add row to fix sliver
+  ggplot()+
+  aes(x = period, y = value, fill = isscaap_group_en)+
+  geom_area()+
+  theme_basic()+
+  guides(fill = guide_legend(title = "", reverse = T, ncol = 3))+
+  labs(x = "Year", y = "Total landed weight (mt)", title = "FAO marine capture production by ISSCAAP group (2000 - 2019)")
+
+dominica_isscaap_landings_plot
+```
+
+Landings for the following species (or species categories) are reported: `r paste0(sort(unique(dominica_marine_dat$species_name_en)), collapse = ", ")`.  
+
+```{r fig.width = 8, fig.cap="Total fisheries landings for Dominica by species from FAO (2000 - 2019)."}
+dominica_species_landings_plot <- dominica_marine_dat %>%
+  group_by(period, isscaap_group_en, species_name_en) %>%
+  summarize(value = sum(value, na.rm = T)) %>%
+  dplyr::filter(period >= 2000) %>%
+  ggplot()+
+  aes(x = period, y = value, fill = isscaap_group_en)+
+  geom_area()+
+  theme_basic()+
+  guides(fill = guide_legend(title = "", reverse = T, ncol = 3))+
+  facet_wrap(~species_name_en, scales = "free_y", ncol = 5)+
+  labs(x = "Year", y = "Total landed weight (mt)", title = "FAO marine capture production by species (2000 - 2019)")
+
+dominica_species_landings_plot
+```
+
+### Estimated value 
+
+```{r}
+price_dat <- read_csv(file.path(emlab_data_dir, "ex-vessel-price-database-updated", "price-db-results", "exvessel_price_database_1976_2019.csv")) %>%
+  clean_names()
+```
+
+FAO does not report the value of capture production directly, but we can estimate the value of Dominica's reported catches using global price datasets from literature. Melnychuk et al. (2016) created a reconstructed database of global ex-vessel prices for fished species between 1976 and 2012. Researchers at the Environmental Markets Lab (emLab) at UCSB updated this database in 2021 such that it includes reconstructed prices from 1976 - 2019. 
+
+```{r}
+price_dat_species <- price_dat %>%
+  dplyr::filter(scientific_name %in% dominica_marine_dat$scientific_name) %>%
+  group_by(year, asfis_species, scientific_name) %>%
+  summarize(exvessel_min = min(exvessel, na.rm = T),
+            exvessel_max = max(exvessel, na.rm = T),
+            exvessel_mean = mean(exvessel, na.rm = T),
+            exvessel_median = median(exvessel, na.rm = T)) %>%
+  dplyr::filter(year >= 2010 & year <= 2019) %>%
+  dplyr::select(year, asfis_species, scientific_name, exvessel_mean) %>%
+  mutate(exvessel_mean = paste0("$", format(round(exvessel_mean, 0), big.mark = ","))) %>%
+  spread(year, exvessel_mean)
+
+price_dat_species_table <- basic_table_html(price_dat_species,
+                 column_names = c("Species", "Scientific name", seq(2010, 2019, by = 1)),
+                 fig_caption = "")
+
+save_table(price_dat_species_table, 
+           here::here("reports", "images", "price_table.png"))
+```
+
+<!-- # ```{r fig.width=4, fig.cap="Reconstructed prices (US$/mt) for species caught in Dominica (2010 - 2019). Sources: Melnychuk et al. (2016) and the Environmental Markets Lab."} -->
+<!-- # knitr::include_graphics(path = here::here("reports", "images", "price_table.png")) -->
+<!-- # ``` -->
+
+```{r}
+dominica_marine_dat_value <- price_dat %>%
+  dplyr::filter(scientific_name %in% dominica_marine_dat$scientific_name) %>%
+  group_by(year, asfis_species, scientific_name) %>%
+  summarize(exvessel = median(exvessel, na.rm = T)) %>%
+  right_join(dominica_marine_dat, by = c("year" = "period", "scientific_name")) %>%
+  mutate(landed_value = value*exvessel)
+
+dominica_value_dat <- dominica_marine_dat_value %>%
+  dplyr::filter(year >= 2000 & year <= 2019) %>%
+  group_by(year) %>%
+  summarize(landed_value = sum(landed_value, na.rm = T))
+```
+
+Matching this back to the FAO marine production data estimates total landed value between `r paste0("US$", format(round(min(dominica_value_dat$landed_value), 0), big.mark = ","))` and `r paste0("US$", format(round(max(dominica_value_dat$landed_value), 0), big.mark = ","))` annually between 2000 and 2019. 
+
+```{r fig.width=6, fig.cap="Estimated value by ISSCAAP group for Dominican fisheries from FAO (2000 - 2019)."}
+fao_value_plot <- dominica_marine_dat_value %>%
+  group_by(year, isscaap_group_en) %>%
+  summarize(landed_value = sum(landed_value, na.rm = T)) %>%
+  dplyr::filter(year >= 2000) %>%
+  ggplot()+
+  aes(x = year, y = landed_value/1e6, fill = isscaap_group_en)+
+  geom_bar(stat = "identity", position = "stack")+
+  theme_basic()+
+  guides(fill = guide_legend(title = "", reverse = F, ncol = 3))+
+  scale_y_continuous(labels = dollar)+
+  labs(x = "Year", y = "Total landed value (million US$)", title = "Estimated value of FAO production by ISSCAAP group (2000 - 2019)")
+
+fao_value_plot
+```
+
+## Reconstructed landings
+
+```{r}
+sau_dat <- read_csv(file.path(project_dir, "data", "01-raw", "SAU EEZ 212 v50-0", "SAU EEZ 212 v50-0.csv")) %>%
+  clean_names()
+```
+
+SAU reconstructed catch data is available for Dominica between `r min(sau_dat$year)` to `r max(sau_dat$year)`. Total capture production in `r max(sau_dat$year)` was reported to be `r round(sum(sau_dat$tonnes[sau_dat$year == max(sau_dat$year)], na.rm = T), 0)` mt. Landings for the following species (or species categories) are reconstructed: `r paste0(sort(unique(sau_dat$common_name)), collapse = ", ")`.  
+
+```{r fig.width=8, fig.cap="Total fisheries landings for Dominica by sector and commercial group from SAU (2000 - 2019)."}
+sau_fleet_landings_plot <- sau_dat %>%
+  group_by(year, fishing_sector, commercial_group) %>%
+  summarize(tonnes = sum(tonnes, na.rm = T)) %>%
+  dplyr::filter(year >= 2000) %>%
+  bind_rows(tibble(year = c(2012, 2013),
+                   fishing_sector = c("Industrial", "Industrial"),
+                   commercial_group = c("Perch-likes", "Perch-likes"),
+                   tonnes = c(0, 0))) %>% # Add row to fix sliver
+  ggplot()+
+  aes(x = year, y = tonnes, fill = commercial_group)+
+  geom_area()+
+  theme_basic()+
+  guides(fill = guide_legend(title = "", reverse = T, ncol = 3))+
+  facet_wrap(~fishing_sector)+
+  labs(x = "Year", y = "Total landed weight (mt)", title = "SAU reconstructed production by sector and commercial group (2000 - 2019)")
+
+sau_fleet_landings_plot
+```
+
+The fishing sector breakdown used by SAU (across all countries) unfortunately does NOT match up well with how Dominica internally defines its fleets. From their report on how they reconstructed Dominica's catches, Ramdeen et al. (2014) even recognizes that nearly all of the fisheries in Dominica are artisanal (a statement repeated by Theophile, 2015), but they define some of the reconstructed catches as "industrial" and "subsistence" anyways. Ramdeen et al. (2014) state: "The artisanal sector consists predominantly of part-time fishers who operate from motorized vessels, including dugout canoes up to 6 m in length, “keel” boats which range from 4-7 m and fiber reinforced plastic vessels. This fishery is seasonal, with a high season from January to June when pelagic species such as flying fish (Exocotidae), tuna (Thunnus spp.), dolphinfish (Corryphaena hippurus) and kingfish (Scomberomorus cavalla) are targeted with trolling, gillnets, hand lines and beach seines, and a low season from July to December, when demersal species are targeted with handlines and fish pots." 
+
+It is worth noting that the SAU reconstructions do not include catches made by French fishers (from Guadeloupe and Martinique) - likely on the Macouba bank. Ramdeen et al. (2014) note that such activity has been documented, but data on the effort and landings of these fishers were not available. 
+
+### Estimated value
+
+```{r}
+sau_value_dat <- sau_dat %>%
+  group_by(year) %>%
+  summarize(landed_value = sum(landed_value, na.rm = T)) %>%
+  dplyr::filter(year >= 2000)
+```
+
+SAU estimate the value of their reconstructed catches directly. Total landed value was estimated between `r paste0("US$", format(round(min(sau_value_dat$landed_value), 0), big.mark = ","))` and `r paste0("US$", format(round(max(sau_value_dat$landed_value), 0), big.mark = ","))` annually between 2000 and 2019. 
+
+```{r fig.width=6, fig.cap="Estimated value by commerical group for Dominican fisheries from SAU (2000 - 2019)."}
+sau_value_plot <- sau_dat %>%
+  group_by(year, commercial_group) %>%
+  summarize(landed_value = sum(landed_value, na.rm = T)) %>%
+  dplyr::filter(year >= 2000) %>%
+  ggplot()+
+  aes(x = year, y = landed_value/1e6, fill = commercial_group)+
+  geom_bar(stat = "identity", position = "stack")+
+  theme_basic()+
+  guides(fill = guide_legend(title = "", reverse = F, ncol = 3))+
+  scale_y_continuous(labels = dollar)+
+  labs(x = "Year", y = "Total landed value (million US$)", title = "SAU estimated value by commercial group (2000 - 2019)")
+
+sau_value_plot
+```
+
+## Comparison
+
+### Catches
+
+In their analysis of Dominica's fisheries data, Theophile (2015) found total landings calculated from national data to be higher than the values reported to the FAO between 1994 and 2013, especially for the period from 2005-2013. Unsurprisingly, both the national landings and FAO data were lower than the reconstructed values done by SAU (Ramdeen et al., 2014). In the years since analysis done by Theophile (2015), SAU reconstructed values have remained nearly double the values reported to the FAO. 
+
+```{r out.width = "6in", fig.cap="Comparison between total fisheries landings for Dominica from different sources. Source: Fig. 9 from Theophile (2015)."}
+knitr::include_graphics(path = here::here("reports", "images", "theophile_fig_9.png"))
+```
+
+```{r fig.width=7.5, fig.cap="Comparison between total fisheries landings for Dominica from SAU and FAO (2000-2019)."}
+dominica_total_landings_plot <- dominica_marine_dat %>%
+  group_by(period) %>%
+  summarize(value = sum(value, na.rm = T)) %>%
+  mutate(reporting_status = "Reported") %>%
+  dplyr::filter(period >= 2000) %>%
+  bind_rows(tibble(period = 2019,
+                   reporting_status = "Unreported",
+                   value = 0)) %>% # Add fake row
+  ggplot()+
+  aes(x = period, y = value, fill = fct_rev(reporting_status))+
+  geom_area()+
+  theme_basic()+
+  guides(fill = guide_legend(title = "", reverse = T))+
+  labs(x = "Year", y = "Total landed weight (mt)", title = "FAO")+
+  scale_y_continuous(limits = c(0, 2600))
+
+sau_total_landings_plot <- sau_dat %>%
+  group_by(year, reporting_status) %>%
+  summarize(tonnes = sum(tonnes, na.rm = T)) %>%
+  dplyr::filter(year >= 2000) %>%
+  ggplot()+
+  aes(x = year, y = tonnes, fill = fct_rev(reporting_status))+
+  geom_area()+
+  theme_basic()+
+  guides(fill = guide_legend(title = "", reverse = T))+
+  labs(x = "Year", y = "Total landed weight (mt)", title = "SAU")+
+  scale_y_continuous(limits = c(0, 2600))
+
+t <- plot_grid(dominica_total_landings_plot + theme(legend.position = "none"),
+          sau_total_landings_plot + theme(legend.position = "none"),
+          nrow = 1)
+
+t2 <- plot_grid(t,
+                get_legend(sau_total_landings_plot),
+                ncol = 1,
+                rel_heights = c(1,0.3))
+
+t2
+```
+
+### Value
+
+Interestingly, even though the reconstructed catches from SAU are much higher than the reported values, the estimated value from SAU does not differ as significantly from that reported in Theophile (2015). The estimated value of the FAO landings are quite a bit lower starting around 2000 though.   
+
+```{r out.width = "6in", fig.cap="Catches and value of dolphinfish and other species in Dominica (1995 - 2014). Source: Fig. 14 from Theophile (2015)."}
+knitr::include_graphics(path = here::here("reports", "images", "theophile_fig_14.png"))
+```
+```{r fig.width=8, fig.cap="Estimated value of dolphinfish and other species's catches in Dominica from SAU and FAO (1995 - 2019)."}
+sau_value_2_plot <- sau_dat %>%
+  mutate(group = ifelse(common_name == "Common dolphinfish", "Dolphinfish", "Remaining catch")) %>%
+  group_by(year, group) %>%
+  summarize(landed_value = sum(landed_value, na.rm = T)) %>%
+  dplyr::filter(year >= 1995) %>%
+  ggplot()+
+  aes(x = year, y = landed_value/1e6, color = group)+
+  geom_point()+
+  geom_line()+
+  theme_basic()+
+  guides(color = guide_legend(title = "", reverse = F, ncol = 3))+
+  scale_y_continuous(labels = dollar, limits = c(0,6))+
+  labs(x = "Year", y = "Total landed value (million US$)", title = "SAU")
+
+fao_value_2_plot <- dominica_marine_dat_value %>%
+  mutate(group = ifelse(species_name_en == "Common dolphinfish", "Dolphinfish", "Remaining catch")) %>%
+  group_by(year, group) %>%
+  summarize(landed_value = sum(landed_value, na.rm = T)) %>%
+  dplyr::filter(year >= 1995) %>%
+  ggplot()+
+  aes(x = year, y = landed_value/1e6, color = group)+
+  geom_point()+
+  geom_line()+
+  theme_basic()+
+  guides(color = guide_legend(title = "", reverse = F, ncol = 3))+
+  scale_y_continuous(labels = dollar, limits = c(0,6))+
+  labs(x = "Year", y = "Total landed value (million US$)", title = "FAO")
+
+w <- plot_grid(fao_value_2_plot + theme(legend.position = "none"),
+          sau_value_2_plot + theme(legend.position = "none"),
+          nrow = 1)
+
+w2 <- plot_grid(w,
+                get_legend(sau_value_2_plot),
+                ncol = 1,
+                rel_heights = c(1,0.3))
+
+w2
+```
+
+## Recommendations
+
+### Catch data
+
+Neither source of data allows for direct analysis of catches at the fleet/fishery level that Dominica seems to define internally (i.e., nearshore vs. offshore). However, from the discussion of fishing methods used (and species types caught) by each fleet from Theophile (2015), we can make some assumptions regarding the FAO data to this effect: 
+
+- It is likely that most of the catches from the older fishers who work the traditional dug-out canoes (operating within five miles or 8 km from the coast) are being lumped into the "Marine fishes nei" category. Theophile noted that this fleet uses nets deployed from the canoes to target small coastal pelagics such as ballyhoo (Hemiramphus brasiliensis), jacks (Carangidae) or mackerels (Scombridae). This fleet also uses fish pots or traps to fish for demersals such as snappers (Etelis and Lutjanus) or groupers (Epinephelus and Mycteroperca). 
+
+- It is likely that most of the landings of the other species types reported by the FAO are coming from the younger fishers (operating up to 80 miles or 129 km offshore) using keel or fibre-reinforced plastic (FRP) vessels (also known as pirogues). Theophile (2015) noted that this fleet catches small coastal pelagics, large migratory (ocean) pelagics, and demersals with an assortment of fishing gear and methods (fish pots, hook and line and nets). The most commercially important large pelagics for this fleet are dolphin fish (Coryphaena hippurus), yellowfin tuna (Thunnus albacares) and blue marlin (Makaira nigricans). Hook and line gear/methods are the most commonly used on these types of vessels, sometimes in conjunction with Fish Aggregating Devices (FADs).
+
+Similar disaggregation by species or species types could probably done with the SAU data, but as mentioned above, I would not try to use the fishing sector breakdown (industrial/artisanal/subsistence) from SAU directly. 
+
+### Price data
+
+Information on local ex-vessel prices seems to be really lacking in the public domain for Dominica. 
+
+- **I would focus a lot of attention on trying to obtain this information, if it exists. From Juan's information, there are seemingly three prices/market avenues to collect data on: 1) fish sold directly by cooperatives, 2) fish sold by fishers/the ladies' association on the side of the road, 3) fish sold directly by fishers to hotels.**
+
+
+Additionally, because prices of pelagics (dolphinfish, tunas, marlins, etc.) tend to be more consistent globally, and because the catches likely to belong to the offshore (younger) fleet are better defined to the species level in the publicly available data, I have more confidence in the value estimates pertaining to this fishery. I think this is consistent with Juan's belief that this fishery receives most of the attention. 
+
+- **I think it would be worthwhile to focus data-collection efforts on the nearshore (older) fishery because less seems to be known about it, but the magnitude of catches are quite large. I would try to obtain better (i.e., species level) data pertaining to the nearshore (older) fleet from Derrick, if it exists. I think this is where you could find the greatest differences in estimated value between the official and publicly available data. I think the value associated with this fleet is also likely to be your greatest source of uncertainty as a lot of the catch may go toward personal/family consumption and therefore be more difficult to value.** 
+
+
+### Other
+
+The data supports statements made by Theophile (2015) and others that very little of Dominica's catches are exported.
+
+- **I would not focus too heavily on trying to obtain data on prices of exported products because these aren't going to contribute to much of the total value.** 
+
+
+## References
+
+Melnychuk, M. C., Clavelle, T., Owashi, B., & Strauss, K. (2016). Reconstruction of global ex-vessel prices of fished species. ICES Journal of Marine Science, 74(1), 121–133. https://doi.org/10.1093/icesjms/fsw169
+
+Ramdeen, R., Harper, S., & Zeller, D. (2014). Reconstruction of Total Marine Fisheries Catches for Dominica (1950-2010) (p. 9).
+
+Theophille, D. (2015). COLLECTION, MANAGEMENT AND PRIMARY ANALYSIS OF FISHERIES DATA IN THE COMMONWEALTH OF DOMINICA.
+
