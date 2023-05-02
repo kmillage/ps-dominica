@@ -171,6 +171,28 @@ world_moll <- ne_countries(scale = "medium", returnclass = "sf") %>%
 
 map_layer_moll <- geom_sf(data = world_moll, aes(group = admin), color = "white", fill = "black", size = 0.1)
 
+# Get EEZ data (Marine Regions v11)
+eez_sf_moll <- st_read(file.path(emlab_data_dir, "marine-regions-eez-v11", "World_EEZ_v11_20191118_gpkg", "eez_v11.gpkg")) %>%
+  janitor::clean_names() %>%
+  dplyr::select(mrgid,
+                eez_name = geoname,
+                eez_type = pol_type,
+                eez_ter1_name = territory1,
+                eez_ter1_iso3 = iso_ter1,
+                eez_sov1_name = sovereign1,
+                eez_ter2_name = territory2,
+                eez_ter2_iso3 = iso_ter2,
+                eez_sov2_name = sovereign2,
+                eez_ter3_name = territory3,
+                eez_ter3_iso3 = iso_ter3,
+                eez_sov3_name = sovereign3,
+                eez_area_km = area_km2) %>%
+  sf::st_transform(crs = st_crs(prj_moll)) # convert to Mollewide
+
+# Extract dominica EEZ boundaries
+dominica_eez_sf_moll <- eez_sf_moll %>%
+  dplyr::filter(mrgid == 8417)
+
 ### Tables ---------------------------------------------------------------------
 # Basic table theme
 basic_table_html <- function(input_data, column_names, fig_caption, shrink=F, longtable=F, digits = 3){

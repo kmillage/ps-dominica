@@ -5,59 +5,39 @@ date: "2023-05-01"
 ---
 
 ```{r setup, include=FALSE}
+# Load helper script
 source(here::here("common.R"))
+
+# Define nautical miles in m
+nm <- 1852
 ```
 
 # Introduction
 
 This script creates shapefiles of potential sperm whales reserves in Dominica according to the following conditions: 
-- The North boundary is defined by a line running perpendicular to shore at X degrees Latitude;
-- The East boundary is defined by the path traveled by the ferry running parallel to shore (NOTE - for now we will use a buffer from shore of X distance to mimic this. We will fix this later depending on the path traveled by the ferry);
-- The South boundary is defined by a line running perpendicular to shore at X degrees Latitude;
-- The West boundary is variable, defined by a line running parallel to shore at X-X degrees degrees Longitude.
+- The North boundary is defined by a line running perpendicular to shore from a specified coordinate (NE);
+- The South boundary is defined by a line running perpendicular to shore from a specified coordinate (SE);
+- The West boundary is variable, defined by a line running between two points determed based on specified distances from their Eastern counterpoints;
+- The East boundary is defined by a line running between the NE and SE corners (NOTE - we may need to refine this later based on the path traveled by the ferry running parallel to shore or some distance from shore).
 
-These shapefiles will be used in later scripts to identify the fraction of sperm whale sightings that occurred within each area, as well as the changes in cruise ship, container ship, and tug transit time/cost to get to the main port
-
-```{r}
-# Get EEZ data (Marine Regions v11)
-eez_sf <- st_read(file.path(emlab_data_dir, "marine-regions-eez-v11", "World_EEZ_v11_20191118_gpkg", "eez_v11.gpkg")) %>%
-  janitor::clean_names() %>%
-  dplyr::select(mrgid,
-                eez_name = geoname,
-                eez_type = pol_type,
-                eez_ter1_name = territory1,
-                eez_ter1_iso3 = iso_ter1,
-                eez_sov1_name = sovereign1,
-                eez_ter2_name = territory2,
-                eez_ter2_iso3 = iso_ter2,
-                eez_sov2_name = sovereign2,
-                eez_ter3_name = territory3,
-                eez_ter3_iso3 = iso_ter3,
-                eez_sov3_name = sovereign3,
-                eez_area_km = area_km2) %>%
-  sf::st_transform(crs = st_crs(prj_moll)) # convert to Mollewide
-
-# Extract dominica EEZ boundaries
-dominica_eez_sf <- eez_sf %>%
-  dplyr::filter(mrgid == 8417)
-```
+These potential reserve boundaries will be used in later scripts to identify the fraction of sperm whale sightings that would have occured within each area, as well as the changes in cruise ship, container ship, and tug transit time/cost that would have been required if they were required to transit around the reserve to get to the main port. 
 
 # Vary West Boundary
 
 ```{r}
-# In meters from the Eastern boundary - will be measured from the corners
-W_distances_top <- c(5556, 9260, 12964) # 3,5,7  nautical miles
-W_distances_bottom <- c(11112, 14816, 18520)  # 6,8,10 nautical miles
+# Distances of the NW and SW corners of the reserve measured from the specified NE and SE coordinates. 
+W_distances_top <- c(3*nm, 5*nm, 7*nm) # 3,5,7  nautical miles
+W_distances_bottom <- c(6*nm, 8*nm, 10*nm)  # 6,8,10 nautical miles
 ```
 
-# Set North Boundary
+# Set Northeast Reserve Coordinate
 
 ```{r}
-# Set NE boundary. Coordinates eyeballed from map Enric sent.  
+# Set NE boundary. Starting coordinates eyeballed from map Enric sent.  
 NE_pt <- data.frame(coord = "NE")
 NE_pt$geom = st_sfc(st_point(c(-61.540650, 15.63)))
 
-# Convert to sf object and assign crs
+# Convert to sf object and specify crs
 NE_pt_sf <- st_as_sf(NE_pt)
 sf::st_crs(NE_pt_sf) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
 NE_pt_sf_moll <- NE_pt_sf %>%
@@ -65,7 +45,7 @@ NE_pt_sf_moll <- NE_pt_sf %>%
 
 # Plot 
 ggplot()+
-  geom_sf(data = dominica_eez_sf, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
   geom_sf(data = NE_pt_sf_moll)
 ```
 
@@ -73,6 +53,7 @@ ggplot()+
 # Get mollewide points of NE coordinate
 NE_pt_moll <- st_coordinates(NE_pt_sf_moll)
 
+# Create container for NW points
 NW_pts_sf_moll <- NULL
 
 # Next, create new points for the potential NW boundary coordinates
@@ -93,11 +74,11 @@ for(i in 1:length(W_distances_top)){
 
 # Plot 
 ggplot()+
-  geom_sf(data = dominica_eez_sf, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
   geom_sf(data = NW_pts_sf_moll, aes(group = coord))
 ```
 
-# Set South Boundary
+# Set Southeast Reserve Coordinate
 
 ```{r}
 # Set SE boundary. Coordinates eyeballed from map Enric sent.  
@@ -112,7 +93,7 @@ SE_pt_sf_moll <- SE_pt_sf %>%
 
 # Plot 
 ggplot()+
-  geom_sf(data = dominica_eez_sf, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
   geom_sf(data = SE_pt_sf_moll)
 ```
 ```{r}
@@ -139,7 +120,7 @@ for(i in 1:length(W_distances_bottom)){
 
 # Plot 
 ggplot()+
-  geom_sf(data = dominica_eez_sf, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
   geom_sf(data = SW_pts_sf_moll, aes(group = coord))
 ```
 
@@ -173,13 +154,13 @@ for(i in 1:length(W_distances_top)){
 
 # Plot 
 ggplot()+
-  geom_sf(data = dominica_eez_sf, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
   geom_sf(data = box_coords_sf_moll, aes(group = scenario, fill = scenario), alpha = 0.5)
 ```
 
-# Set East Boundary
+# Refine East Boundary
 
-Later TO-DO - Refine this boundary based on distance from shore so this boundary isn't a horizontal line
+Later TO-DO - Refine this boundary based on distance from shore or the path traveled by the ferry. 
 
 ```{r}
 # # Intersect with EEZ file
@@ -212,28 +193,60 @@ Later TO-DO - Refine this boundary based on distance from shore so this boundary
 We also need to incorporate a shipping channel bisecting the reserve that is 5 miles wild and directly perpendicular to Roseau. 
 
 ```{r}
-# # Central latitude/longitude of Roseau - directly between the commercial shipping terminal and the cruise ship berth. 
-# roseau_pt <- data.frame(loc = "E_mid")
-# roseau_pt$geom = st_sfc(st_point(c(-61.391959, 15.299277)))
-# 
-# # Convert to sf object and assign crs
-# roseau_pt_sf <- st_as_sf(roseau_pt)
-# sf::st_crs(roseau_pt_sf) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
-# roseau_pt_sf_moll <- roseau_pt_sf %>%
-#   sf::st_transform(crs = st_crs(prj_moll)) # convert to Mollewide
-# 
-# # Create shippings lanes - Top and bottom should be 2.5 nm north and south of point respectively. Each lane is 1 nm, with 3 nm separation lane between them. 
+# Shipping lane width in m
+shipping_lane_width <- 3*nm
+shipping_lane_length <- 12*nm
 
+# Central latitude/longitude of Roseau - directly between the commercial shipping terminal and the cruise ship berth.
+roseau_pt <- data.frame(loc = "E_mid")
+roseau_pt$geom = st_sfc(st_point(c(-61.391959, 15.299277)))
+
+# Convert to sf object and assign crs
+roseau_pt_sf <- st_as_sf(roseau_pt)
+sf::st_crs(roseau_pt_sf) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+roseau_pt_sf_moll <- roseau_pt_sf %>%
+  sf::st_transform(crs = st_crs(prj_moll)) # convert to Mollewide
+
+# Get coordinates
+roseau_pt_moll <- st_coordinates(roseau_pt_sf_moll)
+
+# Create shippings lanes - Top and bottom should be 2.5 nm north and south of point respectively. Each lane is 1 nm, with 3 nm separation lane between them.
+  sl = list(matrix(c(roseau_pt_moll[1], roseau_pt_moll[2]+shipping_lane_width/2, # NE
+                   roseau_pt_moll[1], roseau_pt_moll[2]-shipping_lane_width/2, # SE
+                   roseau_pt_moll[1]-shipping_lane_length, roseau_pt_moll[2]-shipping_lane_width/2, # SW
+                   roseau_pt_moll[1]-shipping_lane_length, roseau_pt_moll[2]+shipping_lane_width/2, # NW
+                   roseau_pt_moll[1], roseau_pt_moll[2]+shipping_lane_width/2), ncol = 2, byrow = T)) # NE
+  sl_box <- st_polygon(sl)
+  
+  sl_moll <- data.frame(name = "shipping lane")
+  sl_moll$geom <- st_sfc(sl_box)
+  
+  # Make simple feature object
+  sl_sf_moll <- st_as_sf(sl_moll)
+  sf::st_crs(sl_sf_moll) <- prj_moll
+
+# Plot 
+ggplot()+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
+  geom_sf(data = box_coords_sf_moll, aes(group = scenario, fill = scenario), alpha = 0.5)+
+  geom_sf(data = sl_sf_moll, aes(group = name), fill = "black")
+  
 ```
 
-# Summarize Reserve Options
+```{r}
+# Subtract shipping channel and summarize
+reserve_boundaries_sf <- st_difference(box_coords_sf_moll, sl_sf_moll) %>%
+  mutate(area_m2 = st_area(geom),
+         area_km2 = as.numeric(area_m2)*1e-6) %>%
+  dplyr::select(-name, -area_m2)
+  
+# Plot 
+ggplot()+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
+  geom_sf(data = reserve_boundaries_sf, aes(group = scenario, fill = scenario), alpha = 0.5)
+```
 
 ```{r}
-# Get area of each potential reserve
-reserve_boundaries_sf <- box_coords_sf_moll %>%
-  mutate(area_m2 = st_area(geom),
-         area_km2 = as.numeric(area_m2)*1e-6)
-
 # Save
 save(reserve_boundaries_sf, file = file.path(here::here("results", "reserve_boundaries.Rdata")))
 ```

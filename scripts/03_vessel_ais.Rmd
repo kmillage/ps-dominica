@@ -1,0 +1,96 @@
+---
+title: "Dominica: Commercial Vessel Tracks"
+output: html_document
+date: "2023-05-01"
+---
+
+```{r setup, include=FALSE}
+# Libraries
+library(lubridate)
+
+# Load common helper script
+source(here::here("common.R"))
+
+# Define nautical miles in m
+nm <- 1852
+
+# Load reserve boundaries
+#load(here::here("results", "reserve_boundaries.Rdata"))
+
+# Load sperm whale sightings
+vessels <- read_csv(here::here("data", "shiny_vessels.csv")) %>%
+  mutate(year = year(timestamp)) %>%
+  st_as_sf(coords = c("lon", "lat"),
+           crs = 4326) %>%
+  sf::st_transform(crs = st_crs(prj_moll)) # convert points to Mollewide
+```
+
+# Introduction
+
+This script loads the database of vessel positions around Dominica from 2012 - 2019 shared with us by Shane Gero and determines the required distance to adjust each track such that the tracks fall outside of the 
+
+```{r}
+# Plot boundaries
+plot_bbox <- data.frame("long"=c(-61,-61,-62,-62,-61),"lat"=c(15.75,15,15,15.75,15.75)) %>%
+  st_as_sf(coords = c("long","lat"), crs = 4326) %>%
+  st_transform(crs = st_crs(prj_moll)) %>%
+  st_bbox()
+
+# Plot 
+ggplot()+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
+  geom_sf(data = whales, size = 0.1, fill = "black")+
+  geom_sf(data = reserve_boundaries_sf, aes(group = scenario, fill = scenario), alpha = 0.4)+
+  coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)
+```
+
+# Summarize by Reserve Design and Year
+
+```{r}
+# Get totals by year
+totals_by_year <- whales %>%
+  st_drop_geometry() %>%
+  group_by(year) %>%
+  summarize(n_sightings_total = n_distinct(obs),
+            n_adults_total = sum(adults, na.rm = T),
+            n_calves_total = sum(calves, na.rm = T),
+            n_whales_total = sum(total, na.rm = T))
+
+# Determine which reserve(s) each observation would fall within
+where_be_whales <- st_join(whales, reserve_boundaries_sf) %>%
+  dplyr::filter(!is.na(scenario))
+  
+# Summarize by year and reserve design
+summary_by_year <- where_be_whales %>%
+  st_drop_geometry() %>%
+  group_by(year, scenario, area_km2) %>%
+  summarize(n_sightings = n_distinct(obs),
+            n_adults = sum(adults, na.rm = T),
+            n_calves = sum(calves, na.rm = T),
+            n_whales = sum(total, na.rm = T)) %>%
+  ungroup() %>%
+  left_join(totals_by_year, by = "year") %>%
+  mutate(prop_sightings = n_sightings/n_sightings_total,
+         prop_adults = n_adults/n_adults_total,
+         prop_calves = n_calves/n_calves_total,
+         prop_whales = n_whales/n_whales_total) %>%
+  dplyr::select(year, scenario, area_km2, contains("prop")) %>%
+  gather("obs_type", "value", contains("prop")) %>%
+  mutate(obs_type = str_replace(obs_type, "prop_", ""))
+```
+
+## Visualize
+
+```{r}
+tradeoff_plot <- summary_by_year %>%
+  ggplot()+
+  aes(x = area_km2, y = value, color = obs_type)+
+  geom_line()+
+  theme_basic()+
+  facet_wrap(~ year)+
+  labs(x = "Reserve Area (km2)", y = "Prop. of Observations")
+  
+tradeoff_plot
+```
+
+
