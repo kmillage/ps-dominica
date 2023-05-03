@@ -33,18 +33,41 @@ whales <- read_csv(here::here("data", "sightings.csv")) %>%
 This script loads the database of sperm whale sightings around Dominica from 2005 - 2018 shared with us by Shane Gero and assessed the proportion of total sightings each year that fall within the boundaries of the proposed reserve(s). 
 
 ```{r}
-# Plot boundaries
-plot_bbox <- data.frame("long"=c(-61,-61,-62,-62,-61),"lat"=c(15.75,15,15,15.75,15.75)) %>%
-  st_as_sf(coords = c("long","lat"), crs = 4326) %>%
-  st_transform(crs = st_crs(prj_moll)) %>%
-  st_bbox()
+# Add scenario name
+reserve_boundaries_sf <- reserve_boundaries_sf %>%
+  mutate(scenario_name = paste0(W_lon, "°W"))
 
 # Plot 
-ggplot()+
-  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+
-  geom_sf(data = whales, size = 0.1, fill = "black")+
-  geom_sf(data = reserve_boundaries_sf, aes(group = scenario, fill = scenario), alpha = 0.4)+
-  coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)
+whales_and_reserves_plot <- ggplot()+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = whales, size = 0.03, fill = "black")+
+  geom_sf(data = reserve_boundaries_sf, aes(fill = scenario_name), alpha = 0.5)+
+  coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)+
+  facet_wrap(~scenario_name, nrow = 1)+
+  theme_basic()+
+  guides(fill = "none")+
+  labs(title = "Potential reserve boundaries overlaid on sperm whale sightings (2005 - 2018)")
+
+ggsave(here::here("results", "reserve_boundries_w_whales_sightings_map.png"), whales_and_reserves_plot)
+
+whales_and_reserves_plot
+```
+
+```{r}
+# Plot again by year
+whales_and_reserves_plot_by_year <- ggplot()+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = whales %>% dplyr::filter(year >= 2014), size = 0.03, fill = "black")+
+  geom_sf(data = reserve_boundaries_sf, aes(fill = scenario_name), alpha = 0.5)+
+  coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)+
+  facet_grid(year~scenario_name)+
+  theme_basic()+
+  guides(fill = "none")+
+  labs(title = "Potential reserve boundaries overlaid on sperm whale sightings (2014 - 2018)")
+
+ggsave(here::here("results", "reserve_boundries_w_whales_sightings_2014_2018_map.png"), whales_and_reserves_plot_by_year)
+
+whales_and_reserves_plot_by_year
 ```
 
 # Summarize by Reserve Design and Year
@@ -66,7 +89,7 @@ where_be_whales <- st_join(whales, reserve_boundaries_sf) %>%
 # Summarize by year and reserve design
 summary_by_year <- where_be_whales %>%
   st_drop_geometry() %>%
-  group_by(year, scenario, area_km2) %>%
+  group_by(year, scenario_name, area_km2) %>%
   summarize(n_sightings = n_distinct(obs),
             n_adults = sum(adults, na.rm = T),
             n_calves = sum(calves, na.rm = T),
@@ -77,7 +100,7 @@ summary_by_year <- where_be_whales %>%
          prop_adults = n_adults/n_adults_total,
          prop_calves = n_calves/n_calves_total,
          prop_whales = n_whales/n_whales_total) %>%
-  dplyr::select(year, scenario, area_km2, contains("prop")) %>%
+  dplyr::select(year, scenario_name, area_km2, contains("prop")) %>%
   gather("obs_type", "value", contains("prop")) %>%
   mutate(obs_type = str_replace(obs_type, "prop_", ""))
 ```
@@ -91,8 +114,10 @@ tradeoff_plot <- summary_by_year %>%
   geom_line()+
   theme_basic()+
   facet_wrap(~ year)+
-  labs(x = "Reserve Area (km2)", y = "Prop. of Observations")
+  labs(x = "Reserve Area (km2)", y = "Prop. of Observations", title = "Proportion of sperm whale sightings within potential reserves by area (2005 - 2018)")
   
+ggsave(here::here("results", "prop_whale_sightings_by_reserve_and_year.png"), tradeoff_plot)
+
 tradeoff_plot
 ```
 
