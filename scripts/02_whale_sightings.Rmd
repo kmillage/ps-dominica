@@ -17,6 +17,9 @@ nm <- 1852
 # Load reserve boundaries
 load(here::here("results", "reserve_boundaries.Rdata"))
 
+# # Reserve bbox
+# test <- st_bbox(reserve_boundaries_sf %>% st_transform(crs = 4326))
+
 # Load sperm whale sightings
 whales <- read_csv(here::here("data", "sightings.csv")) %>%
   rowwise() %>%

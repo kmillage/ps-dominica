@@ -1,0 +1,153 @@
+---
+title: "Dominica: Process Commercial Vessel Tracks"
+output: html_document
+date: "2023-05-01"
+---
+
+# Introduction
+
+This script loads and cleans the database of vessel positions around Dominica between 2012 - 2019 shared with us by Shane Gero. 
+
+```{r setup, include=FALSE}
+# Libraries
+library(lubridate)
+
+# Load common helper script
+source(here::here("common.R"))
+
+# # Load reserve boundaries
+# load(here::here("results", "reserve_boundaries.Rdata"))
+
+# Load raw ais data
+ais_dat <- read_csv(here::here("data", "ais", "raw", "shiny_vessels.csv")) %>%
+  janitor::clean_names()
+```
+
+# Clean dates and column names
+
+```{r}
+# Process the data -----------------------------------------------------------
+ais_dat_clean <- ais_dat %>%
+  as.data.table() %>%
+  dplyr::select(mmsi, vessel_type, category, datetime = timestamp, lat, lon, speed) %>%
+  mutate(lat = as.numeric(lat),
+         lon = as.numeric(lon),
+         year = lubridate::year(datetime),
+         month = lubridate::month(datetime))
+
+# Export the file ------------------------------------------------------------
+write_csv(ais_dat_clean, file = here("data", "ais", "clean", paste0("Dominica_AIS_2012_2019.csv")))
+```
+
+# Segment
+
+The AIS positions provided to us by Shane don't appear to have been grouped into any sort of continuous segments or trips, so let's do this first.
+
+```{r}
+# Create segments  ------------------------------------------------------------
+ais_dat_seg <- ais_dat_clean %>%
+  group_by(mmsi) %>%
+  mutate(hours = difftime(datetime, lag(datetime), units = "hours")) %>% # time difference in hours
+  ungroup() %>%
+  mutate(start_new_seg = case_when(is.na(hours) ~ T,
+                                   hours > 24 ~ T), # If more than 24 hours has elapsed, start new segment
+         seg_id = ifelse(start_new_seg, paste0(mmsi, "_", datetime), NA),
+         seg_id = fill.na(seg_id)) %>%
+  dplyr::select(-start_new_seg)
+
+ais_dat_seg$hours[is.na(ais_dat_seg$hours)] <- 0
+```
+
+# Calculate distances between points
+
+Next we want to get the distances between points so we can determine changes in trip distance. I'll first tried doing this using the tidyverse approach below, but this process takes ~30 minutes on my computer. 
+
+```{r}
+# Make coords spatial ----------------------------------------------------------
+ais_dat_sf <- ais_dat_seg %>%
+  st_as_sf(coords = c("lon", "lat"),
+           crs = 4326) %>%
+  sf::st_transform(crs = st_crs(prj_moll)) # convert points to Mollewide
+
+# Calculate distances ----------------------------------------------------------
+ais_dat_dist <- ais_dat_sf %>%
+  group_by(mmsi, seg_id) %>%
+  mutate(dist_from_last = st_distance(lag(geometry), geometry, by_element = T),
+         dist_to_next = st_distance(geometry, lead(geometry), by_element = T)) %>%
+  ungroup() %>%
+  mutate(dist_from_last = ifelse(!is.na(dist_from_last), dist_from_last, 0),
+         dist_to_next = ifelse(!is.na(dist_to_next), dist_to_next, 0),
+         dist = 0.5*dist_from_last + 0.5*dist_to_next)
+
+# Export the file ------------------------------------------------------------
+save(ais_dat_dist, file = here("data", "ais", "clean", "Dominica_AIS_2012_2019_processed.Rdata"))
+```
+
+## Summarize 
+
+```{r}
+# # Now let's try grouping this by segment
+# test_seg_dat <- test_vessel_dat %>%
+#   group_by(mmsi, seg_id, vessel_type, category, year) %>%
+#   summarize(time_elapsed = last(timestamp) - first(timestamp),
+#             dist_traveled = sum(dist, na.rm = T)) %>%
+#   ungroup() %>%
+#   dplyr::filter(time_elapsed > 0 & dist_traveled > 0) # Remove segments with no time elapsed or distance traveled 
+# 
+# # Plot
+# ggplot()+
+#   geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
+#   geom_sf(data = reserve_boundaries_sf, aes(fill = scenario_name), alpha = 0.4)+
+#   geom_sf(data = test_seg_dat, aes(group = seg_id), size = 0.2)+
+#   coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)+
+#   theme_basic()
+```
+
+Ok, it looks like the process to segment positions and calculate distance traveled associated with each position is working. So let's go ahead and try to apply this to our most recent data... This might be a bit time consuming, so let's see how long it takes to do a single year first on my computer. This takes a long time - need to try a different approach. 
+
+## 2018
+
+```{r}
+# Apply to 2018 positions only
+positions_2018 <- vessels %>%
+  dplyr::filter(year == 2018) %>%
+  group_by(mmsi) %>% 
+  mutate(time_from_prev = timestamp - lag(timestamp)) %>%
+  ungroup() %>%
+  mutate(start_new_seg = case_when(is.na(time_from_prev) ~ T,
+                                   time_from_prev > 60 ~ T),
+         seg_id = ifelse(start_new_seg, paste0(mmsi, "_", timestamp), NA),
+         seg_id = fill.na(seg_id)) %>%
+  group_by(mmsi, seg_id) %>%
+  mutate(dist_from_last = st_distance(lag(geometry), geometry, by_element = T),
+         dist_to_next = st_distance(geometry, lead(geometry), by_element = T)) %>%
+  ungroup() %>%
+  mutate(dist_from_last = ifelse(!is.na(dist_from_last), dist_from_last, 0),
+         dist_to_next = ifelse(!is.na(dist_to_next), dist_to_next, 0),
+         dist = 0.5*dist_from_last + 0.5*dist_to_next) %>%
+  dplyr::select(mmsi, seg_id, timestamp, vessel_type, category, year, time_elapsed, dist)
+  
+```
+
+```{r}
+# # Add scenario name
+# reserve_boundaries_sf <- reserve_boundaries_sf %>%
+#   mutate(scenario_name = paste0(W_lon, "°W"))
+# 
+# # Add spatial points to DF
+# ais_sf <- ais_dat %>%
+#   mutate(year = year(timestamp)) %>%
+#   st_as_sf(coords = c("lon", "lat"),
+#            crs = 4326) %>%
+#   sf::st_transform(crs = st_crs(prj_moll)) # convert points to Mollewide
+# 
+# # Plot raw positions by vessel type. All over the place. 
+# ggplot()+
+#   geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
+#   geom_sf(data = ais_sf %>% dplyr::filter(year == 2019), size = 0.1, fill = "black")+
+#   geom_sf(data = reserve_boundaries_sf, aes(fill = scenario_name), alpha = 0.4)+
+#   coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)+
+#   theme_basic()+
+#   facet_wrap(~vessel_type)
+```
+
