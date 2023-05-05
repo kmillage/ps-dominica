@@ -1,0 +1,331 @@
+---
+title: "Dominica: Process GFW positional data for voyages starting/ending in Dominica"
+output: html_document
+date: "2023-05-01"
+---
+
+```{r setup, include=FALSE}
+# Packages
+library(DBI)
+library(bigrquery)
+library(networkD3) # Make flow diagram
+library(webshot) # Save static version of flow diagram
+
+# Load common helper script
+source(here::here("common.R"))
+
+# Load reserve boundaries
+load(here::here("results", "reserve_boundaries.Rdata"))
+
+# Setup BQ connections
+bq_auth_id <- "kmillage@ucsb.edu"
+
+# Bigquery project for billing
+bq_project <-  "emlab-gcp"
+
+# Solution to bigrquery error (August 5, 2020) - see https://github.com/r-dbi/bigrquery/issues/395 for details
+options(scipen = 20)
+```
+
+# Introduction
+
+This script queries the GFW research messages tables to get more information for trips that start/end in Dominica. 
+
+# Load reserve boundaries into Bigquery
+
+Since we're interested in finding the last AIS position (for vessels arriving in Dominica) outside of the proposed reserve boundaries [or first in the case of vessels departing Dominica] we need to first upload the reserve boundaries we created to Bigquery as a spatial object.
+
+```{r}
+# Convert geometry list column to text that Bigquery will be able to read
+reserve_boundaries_upload <- reserve_boundaries_sf %>%
+  st_transform(crs = 4326) %>%
+  mutate(geometry = st_as_text(geom, projjson = T)) %>%
+  st_drop_geometry()
+
+# Specify table fields
+table_fields <- as_bq_fields(list(bq_field("method", "string"), bq_field("scenario", "integer"), bq_field("W_lon", "float"), bq_field("area_km2", "float"), bq_field("geometry", "geography")))
+
+# Table to save output
+reserve_boundaries_table <- bq_table(project = bq_project,
+                                     table = "reserve_boundaries",
+                                     dataset = "dominica")
+
+# Upload
+reserve_boundaries_table %>%
+  bq_table_upload(fields = table_fields, values = reserve_boundaries_upload,
+                  write_disposition = 'WRITE_TRUNCATE')
+```
+# Extract raw positional data for trips starting/ending in Dominica
+
+Next we need to query the raw positional data for trips we identified as starting/ending in Dominica. This is an example query to pull those positions for 2022 - This took ~3 minutes and probably cost a few dollars. I think I need to figure out how to get this process filtered down.... 
+
+```{r}
+trip_info_sql <- 'WITH 
+
+  ########################################
+  # This subquery identifies good segments
+  good_segments AS (
+    SELECT
+      seg_id
+    FROM
+      `world-fishing-827.pipe_production_v20201001.research_segs`
+    WHERE good_seg
+      AND NOT overlapping_and_short
+    ),
+
+  ########################################
+  # This subquery extracts our trip information associated with voyages to/from ports in Dominica
+
+  good_trip_info AS (
+    SELECT
+      *
+    FROM
+      `emlab-gcp.dominica.dominica_voyages_2017_2022`
+  ),
+
+  ########################################
+  # This subquery gets all AIS messages 
+
+  positions AS(
+      SELECT 
+        *
+      FROM  
+        `world-fishing-827.pipe_production_v20201001.research_messages`
+      WHERE
+        EXTRACT(YEAR FROM timestamp) > 2016 
+        AND EXTRACT(YEAR FROM timestamp) < 2023
+        AND _partitiontime BETWEEN "2022-01-01" AND "2022-12-31"
+        AND seg_id IN (
+          SELECT
+              seg_id
+            FROM
+              good_segments)
+  ),
+
+  ########################################
+  # This subquery filters the raw AIS positions  
+
+  positions_keep AS(
+    SELECT
+    msgid,
+    positions.ssvid,
+    positions.seg_id,
+    positions.timestamp,
+    lat,
+    lon,
+    speed_knots,
+    meters_to_prev,
+    hours,
+    source,
+    distance_from_shore_m,
+    trip_id
+    FROM positions as positions
+    INNER JOIN good_trip_info as trips 
+      ON positions.ssvid = trips.ssvid
+      AND positions.timestamp >= trips.start_timestamp 
+      AND positions.timestamp <= trips.end_timestamp
+  ),
+
+  positions_inside AS(
+    SELECT
+      msgid,
+      scenario
+    FROM positions_keep as p
+    JOIN `emlab-gcp.dominica.reserve_boundaries` AS reserve
+    ON ST_WITHIN(st_geogpoint(p.lon, p.lat), reserve.geometry)
+    WHERE lon IS NOT NULL and lat IS NOT NULL
+  ),
+
+  positions_matched AS(
+    SELECT
+      *,
+      if(scenario is not null, TRUE, FALSE) as in_reserve
+    FROM positions_keep
+    LEFT JOIN positions_inside
+      USING(msgid)
+    ORDER BY
+      trip_id,
+      timestamp
+  )
+
+SELECT
+  *
+FROM
+  positions_matched
+ORDER BY
+  trip_id,
+  timestamp'
+```
+
+
+```{r query-port-index, eval=F}
+# # Table to save output
+# positions_2022_table <- bq_table(project = bq_project,
+#                                  table = "all_relevant_positions_2022",
+#                                  dataset = "dominica")
+# 
+# if(bq_table_exists(positions_2022_table)){
+#   bq_table_delete(positions_2022_table)
+# }else{
+#   bq_table_create(positions_2022_table)
+# }
+# 
+# # Run query - We have 25 named anchorages 
+# bq_project_query(bq_project, 
+#                  query = trip_info_sql,
+#                  destination_table = positions_2022_table,
+#                  use_legacy_sql = FALSE,
+#                  allowLargeResults = TRUE)
+```
+
+Now let's try to summarize these positions by trip... 
+
+```{r}
+sql <- 'WITH 
+
+  trip_totals AS (
+    SELECT 
+      trip_id,
+      ssvid,
+      COUNT(seg_id) as segments_total,
+      SUM(hours) as hours_total,
+      SUM(meters_to_prev) as dist_total,
+      COUNT(msgid) as positions_total,
+      MIN(timestamp) as start_timestamp,
+      MAX(timestamp) as end_timestamp
+    FROM
+      `emlab-gcp.dominica.all_relevant_positions_2022`
+    GROUP BY
+      trip_id,
+      ssvid
+  ),
+
+  outside_positions AS (
+    SELECT
+      *
+    FROM
+      `emlab-gcp.dominica.all_relevant_positions_2022`
+    WHERE
+      in_reserve = FALSE
+  ),
+
+   first_outside AS(
+    SELECT
+      trip_id,
+      lat as first_lat_outside,
+      lon as first_lon_outside,
+      timestamp as first_timestamp_outside
+    FROM (
+      SELECT RANK() OVER (PARTITION BY trip_id ORDER BY timestamp) AS R,
+        trip_id,
+        lat,
+        lon,
+        timestamp
+      FROM
+      outside_positions
+      ) AS ST
+    WHERE ST.R = 1
+  ),
+
+  last_outside AS(
+    SELECT
+      trip_id,
+      lat as last_lat_outside,
+      lon as last_lon_outside,
+      timestamp as last_timestamp_outside
+    FROM (
+      SELECT RANK() OVER (PARTITION BY trip_id ORDER BY timestamp) AS N,
+        trip_id,
+        lat,
+        lon,
+        timestamp
+      FROM
+      outside_positions
+      ) AS ST
+      WHERE ST.N = LAST_VALUE(ST.N)
+  ),
+
+  outside_totals AS (
+    SELECT 
+      trip_id,
+      ssvid,
+      SUM(hours) as hours_outside,
+      SUM(meters_to_prev) as dist_outside,
+      COUNT(msgid) as positions_outside
+    FROM
+      outside_positions
+    GROUP BY
+      trip_id,
+      ssvid
+  ),
+
+  inside_positions AS (
+    SELECT
+      *
+    FROM
+      `emlab-gcp.dominica.all_relevant_positions_2022`
+    WHERE
+      in_reserve
+  ),
+
+  first_inside AS(
+    SELECT
+      trip_id,
+      scenario,
+      lat as first_lat_inside,
+      lon as first_lon_inside,
+      timestamp as first_timestamp_inside
+    FROM (
+      SELECT RANK() OVER (PARTITION BY scenario AND trip_id ORDER BY timestamp) AS P
+      FROM
+      inside_positions
+      ) AS T
+      WHERE T.P = 1
+  ),
+
+  last_inside AS(
+    SELECT
+      scenario,
+      trip_id,
+      lat as last_lat_inside,
+      lon as last_lon_inside,
+      timestamp as last_timestamp_inside
+    FROM (
+      SELECT RANK() OVER (PARTITION BY scenario AND trip_id ORDER BY timestamp) AS Y
+      FROM
+      inside_positions
+      ) AS S
+      WHERE S.Y = max(S.Y)
+  ),
+
+  inside_totals AS (
+    SELECT 
+      scenario,
+      trip_id,
+      ssvid,
+      SUM(hours) as hours_inside,
+      SUM(meters_to_prev) as dist_inside,
+      COUNT(msgid) as positions_inside
+    FROM
+      inside_positions
+    GROUP BY
+      trip_id,
+      ssvid,
+      scenario
+  )
+
+SELECT 
+  *
+FROM
+  trip_totals
+JOIN outside_totals USING(trip_id, ssvid)
+JOIN first_outside USING(trip_id, ssvid)
+JOIN last_outside USING(trip_id, ssvid)
+JOIN inside_totals USING(trip_id, ssvid)
+JOIN first_inside USING(trip_id, ssvid, scenario)
+JOIN last_inside USING(trip_id, ssvid, scenario)
+'
+```
+
+
+

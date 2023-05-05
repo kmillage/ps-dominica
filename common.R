@@ -29,6 +29,8 @@ project_dir <- "/Users/kat/Library/CloudStorage/GoogleDrive-millagek@gmail.com/M
 
 emlab_data_dir <- "/Users/kat/Library/CloudStorage/GoogleDrive-kmillage@ucsb.edu/Shared\ drives/emlab/data"
 
+prj_cachalote_dir <- "/Users/kat/Library/CloudStorage/GoogleDrive-millagek@gmail.com/.shortcut-targets-by-id/16vjFvzPNgx8MuRqNqZj-Uqc08bkAVKqX/Pristine\ Seas/SCIENCE/projects/prj-cachalote"
+
 ### Maps -----------------------------------------------------------------------
 # Basic mapping theme
 my_theme_map <- function(base_size = 12, base_family = "") {
@@ -98,7 +100,8 @@ theme_basic <- function(){
     ggplot2::theme(panel.border = element_blank(), 
                    #panel.background = element_rect(fill = "#f7f7f7", color = NA), 
                    panel.background = element_rect(fill = "transparent",colour = NA), 
-                   plot.background = element_rect(fill = "transparent",colour = NA),
+                   #plot.background = element_rect(fill = "transparent",colour = NA),
+                   plot.background = element_rect(fill = "#f7f7f7",colour = NA),
                    panel.grid.minor=element_blank(),
                    legend.position = "bottom", 
                    legend.box = "vertical", 

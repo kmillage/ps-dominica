@@ -228,10 +228,10 @@ NE_coordinates <- c(-61.458272, 15.638654) # Northernmost point on the island
 SE_coordinates <- c(-61.374291, 15.214981) # Tip of Scotts Head
 
 # Longitudes for the Western boundary
-W_longitudes <- c(-61.55, -61.575, -61.6, -61.625, -61.65)
+W_longitudes <- c(-61.55, -61.6, -61.65)
 
 # Eastern distance from shore
-E_distance_from_shore <- 1.5*nm
+E_distance_from_shore <- 2*nm
 ```
 
 ## Set NE Corner
@@ -413,7 +413,7 @@ reserve_plot <- ggplot()+
   guides(fill = guide_colorbar(title = "Scenario", title.position = "top"))+
   coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)
 
-ggsave(here::here("results", "potential_reserve_boundaries_map.png"), reserve_plot)
+ggsave(file.path(prj_cachalote_dir, "figures", "potential_reserve_boundaries_map.png"), reserve_plot)
 
 reserve_plot
 ```
@@ -428,7 +428,7 @@ reserve_size_plot <- reserve_with_sl_sf_moll %>%
   theme_basic()+
   labs(x = "Longitude (W) of West Reserve Boundary", y = "Reserve Area (km2)")
 
-ggsave(here::here("results", "reserve_W_boundary_vs_area.png"), reserve_size_plot)
+ggsave(file.path(prj_cachalote_dir, "figures", "potential_reserve_size_from_W_boundary.png"), reserve_size_plot)
 
 reserve_size_plot
 ```
@@ -442,7 +442,7 @@ reserve_boundaries_sf <- reserve_with_sl_sf_moll
 save(#reserve_boundaries_sf_v1,
      reserve_boundaries_sf,
      plot_bbox,
-     file = file.path(here::here("results", "reserve_boundaries.Rdata")))
+     file = file.path(prj_cachalote_dir, "data", "processed", "reserve_boundaries.Rdata"))
 ```
 
 
