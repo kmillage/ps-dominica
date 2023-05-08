@@ -84,6 +84,7 @@ bq_project_query(bq_project,
                  use_legacy_sql = FALSE,
                  allowLargeResults = TRUE)
 ```
+
 # Extract raw positional data for trips starting/ending in Dominica
 
 Next we need to query the raw positional data for trips we identified as starting/ending in Dominica. This is an example query to pull the relevant positions for 2017 - 2022. This took ~3 minutes and probably cost $5. This shouldn't need to be rerun unless Tyler suggests a better way to match voyages to raw positions.
@@ -339,13 +340,104 @@ trips_coming_in_sql <- "WITH
     WHERE
       start_is_DMA = FALSE 
       AND end_is_DMA
+  ),
+
+  vessel_info AS (
+    SELECT DISTINCT
+      CAST(mmsi as string) as ssvid,
+      geartype as vessel_type
+    FROM
+      `world-fishing-827.vessel_database.all_vessels_20190102`
+    WHERE
+      geartype is not null
+  ),
+  
+  all_relevant_positions AS (
+    SELECT DISTINCT
+      msgid,
+      trip_id,
+      ssvid,
+      timestamp,
+      lat,
+      lon,
+      speed_knots,
+      meters_to_prev,
+      hours
+    FROM
+      `emlab-gcp.dominica.all_positions_matched_to_reserve_2017_2022`
+    WHERE
+      trip_id IN (
+          SELECT
+            trip_id
+          FROM
+            voyages_into_dom)
+  ),
+
+  first_position AS(
+      SELECT
+        trip_id,
+        lat as lat_start,
+        lon as lon_start,
+      FROM (
+        SELECT RANK() OVER (PARTITION BY trip_id ORDER BY timestamp) AS i,
+          trip_id,
+          lat,
+          lon
+        FROM
+          all_relevant_positions
+      ) AS pos
+      WHERE pos.i = 1
+  ),
+
+  last_position AS(
+      SELECT
+        trip_id,
+        lat as lat_end,
+        lon as lon_end,
+      FROM (
+        SELECT RANK() OVER (PARTITION BY trip_id ORDER BY timestamp desc) AS b,
+          trip_id,
+          lat,
+          lon
+        FROM
+          all_relevant_positions
+      ) AS pos
+      WHERE pos.b = 1
   )
 
 SELECT 
-  *
+  trip_id,
+  ssvid,
+  vessel_type,
+  start_iso3,
+  start_anchorage_id,
+  start_anchorage_name,
+  start_is_DMA,
+  end_iso3,
+  end_anchorage_id,
+  end_anchorage_name,
+  end_is_DMA,
+  messages_total,
+  segments_total,
+  hours_total,
+  dist_total,
+  timestamp_start,
+  lat_start,
+  lon_start,
+  timestamp_end,
+  lat_end,
+  lon_end,
+  scenario,
+  hours_in_reserve,
+  distance_in_reserve as dist_in_reserve,
+  first_timestamp_in_reserve as timestamp_first_in_reserve,
+  last_timestamp_in_reserve as timestamp_last_in_reserve
 FROM
   voyages_into_dom
+LEFT JOIN vessel_info USING (ssvid)
 LEFT JOIN `emlab-gcp.dominica.trip_summary_table_initial_2017_2022` USING(trip_id, ssvid)
+LEFT JOIN first_position USING (trip_id)
+LEFT JOIN last_position USING (trip_id)
 ORDER BY
   trip_id,
   scenario,
@@ -355,7 +447,7 @@ ORDER BY
 ```{r}
 # Table to save output
 trips_in_table <- bq_table(project = bq_project,
-                           table = "trips_in_summary_table",
+                           table = "trips_in_summary_table_raw",
                            dataset = "dominica")
 
 if(bq_table_exists(trips_in_table)){
@@ -372,7 +464,7 @@ bq_project_query(bq_project,
                  allowLargeResults = TRUE)
 ```
 
-Next we need to find the last position before each vessel entered the reserve under each scenario. I wasn't having any luck doing this all at once, so we're going to loop over scenarios. 
+Next we need to find the last position before each vessel entered the potential reserve for each scenario. I wasn't having any luck doing this for all scenarios at once, so we're going to loop over scenarios. 
 
 ```{r}
 scenarios <- unique(reserve_boundaries_sf$scenario)
@@ -385,9 +477,9 @@ last_positions_sql <- paste0("WITH
     SELECT
       trip_id,
       scenario,
-      first_timestamp_in_reserve
+      timestamp_first_in_reserve
     FROM
-      `emlab-gcp.dominica.trips_in_summary_table`
+      `emlab-gcp.dominica.trips_in_summary_table_raw`
     WHERE
       scenario = ", scenarios[i], "
   ),
@@ -429,7 +521,7 @@ last_positions_sql <- paste0("WITH
         all_relevant_positions as ap
       JOIN trip_table as tp
         ON ap.trip_id = tp.trip_id
-        AND ap.timestamp < tp.first_timestamp_in_reserve
+        AND ap.timestamp < tp.timestamp_first_in_reserve
   ),
 
   total_time_before_inside AS(
@@ -449,9 +541,9 @@ last_positions_sql <- paste0("WITH
       SELECT
         trip_id,
         scenario,
-        timestamp as last_timestamp_before_reserve,
-        lat as last_lat_before_reserve,
-        lon as last_lon_before_reserve
+        timestamp as timestamp_last_before_reserve,
+        lat as lat_last_before_reserve,
+        lon as lon_last_before_reserve
       FROM (
         SELECT RANK() OVER (PARTITION BY trip_id, scenario ORDER BY timestamp desc) AS fi,
           trip_id,
@@ -506,13 +598,20 @@ trips_coming_in_final_sql <- "WITH
     SELECT * FROM `emlab-gcp.dominica.trips_in_scenario_2`
     UNION ALL
     SELECT * FROM `emlab-gcp.dominica.trips_in_scenario_3`
+  ),
+  
+  keep as (
+    SELECT
+      * EXCEPT(timestamp_first_in_reserve)
+    FROM
+      all_trip_details
   )
 
 SELECT 
   *
 FROM
-  `emlab-gcp.dominica.trips_in_summary_table`
-LEFT JOIN all_trip_details  USING(trip_id, scenario, first_timestamp_in_reserve)
+  `emlab-gcp.dominica.trips_in_summary_table_raw`
+LEFT JOIN keep  USING(trip_id, scenario)
 ORDER BY
   trip_id,
   scenario"
@@ -530,7 +629,7 @@ if(bq_table_exists(trips_in_table2)){
 
 # Run query
 trips_in <- bq_project_query(bq_project,
-                 query = trips_coming_in_sql,
+                 query = trips_coming_in_final_sql,
                  destination_table = trips_in_table2,
                  use_legacy_sql = FALSE,
                  allowLargeResults = TRUE) %>%
@@ -539,7 +638,6 @@ trips_in <- bq_project_query(bq_project,
 # Save locally too
 write_csv(trips_in, file.path(prj_cachalote_dir, "data", "processed", "trips_in_summary_table.csv"))
 ```
-
 
 ## Trips out of Dominica
 
@@ -565,13 +663,104 @@ trips_going_out_sql <- "WITH
     WHERE
       start_is_DMA 
       AND end_is_DMA = FALSE
+  ),
+
+  vessel_info AS (
+    SELECT DISTINCT
+      CAST(mmsi as string) as ssvid,
+      geartype as vessel_type
+    FROM
+      `world-fishing-827.vessel_database.all_vessels_20190102`
+    WHERE
+      geartype is not null
+  ),
+  
+  all_relevant_positions AS (
+    SELECT DISTINCT
+      msgid,
+      trip_id,
+      ssvid,
+      timestamp,
+      lat,
+      lon,
+      speed_knots,
+      meters_to_prev,
+      hours
+    FROM
+      `emlab-gcp.dominica.all_positions_matched_to_reserve_2017_2022`
+    WHERE
+      trip_id IN (
+          SELECT
+            trip_id
+          FROM
+            voyages_out_of_dom)
+  ),
+
+  first_position AS(
+      SELECT
+        trip_id,
+        lat as lat_start,
+        lon as lon_start,
+      FROM (
+        SELECT RANK() OVER (PARTITION BY trip_id ORDER BY timestamp) AS i,
+          trip_id,
+          lat,
+          lon
+        FROM
+          all_relevant_positions
+      ) AS pos
+      WHERE pos.i = 1
+  ),
+
+  last_position AS(
+      SELECT
+        trip_id,
+        lat as lat_end,
+        lon as lon_end,
+      FROM (
+        SELECT RANK() OVER (PARTITION BY trip_id ORDER BY timestamp desc) AS b,
+          trip_id,
+          lat,
+          lon
+        FROM
+          all_relevant_positions
+      ) AS pos
+      WHERE pos.b = 1
   )
 
 SELECT 
-  *
+  trip_id,
+  ssvid,
+  vessel_type,
+  start_iso3,
+  start_anchorage_id,
+  start_anchorage_name,
+  start_is_DMA,
+  end_iso3,
+  end_anchorage_id,
+  end_anchorage_name,
+  end_is_DMA,
+  messages_total,
+  segments_total,
+  hours_total,
+  dist_total,
+  timestamp_start,
+  lat_start,
+  lon_start,
+  timestamp_end,
+  lat_end,
+  lon_end,
+  scenario,
+  hours_in_reserve,
+  distance_in_reserve as dist_in_reserve,
+  first_timestamp_in_reserve as timestamp_first_in_reserve,
+  last_timestamp_in_reserve as timestamp_last_in_reserve
 FROM
   voyages_out_of_dom
+LEFT JOIN vessel_info USING (ssvid)
 LEFT JOIN `emlab-gcp.dominica.trip_summary_table_initial_2017_2022` USING(trip_id, ssvid)
+LEFT JOIN first_position USING (trip_id)
+LEFT JOIN last_position USING (trip_id)
 ORDER BY
   trip_id,
   scenario,
@@ -581,7 +770,7 @@ ORDER BY
 ```{r}
 # Table to save output
 trips_out_table <- bq_table(project = bq_project,
-                           table = "trips_out_summary_table",
+                           table = "trips_out_summary_table_raw",
                            dataset = "dominica")
 
 if(bq_table_exists(trips_out_table)){
@@ -609,9 +798,9 @@ first_positions_sql <- paste0("WITH
     SELECT
       trip_id,
       scenario,
-      last_timestamp_in_reserve
+      timestamp_last_in_reserve
     FROM
-      `emlab-gcp.dominica.trips_out_summary_table`
+      `emlab-gcp.dominica.trips_out_summary_table_raw`
     WHERE
       scenario = ", scenarios[i], "
   ),
@@ -653,7 +842,7 @@ first_positions_sql <- paste0("WITH
         all_relevant_positions as ap
       JOIN trip_table as tp
         ON ap.trip_id = tp.trip_id
-        AND ap.timestamp > tp.last_timestamp_in_reserve
+        AND ap.timestamp > tp.timestamp_last_in_reserve
   ),
 
   total_time_after_inside AS(
@@ -669,13 +858,13 @@ first_positions_sql <- paste0("WITH
       scenario
   ),
 
-  last_point_after_inside AS(
+  first_point_after_inside AS(
       SELECT
         trip_id,
         scenario,
-        timestamp as first_timestamp_after_reserve,
-        lat as first_lat_after_reserve,
-        lon as first_lon_after_reserve
+        timestamp as timestamp_first_after_reserve,
+        lat as lat_first_after_reserve,
+        lon as lon_first_after_reserve
       FROM (
         SELECT RANK() OVER (PARTITION BY trip_id, scenario ORDER BY timestamp) AS fi,
           trip_id,
@@ -694,7 +883,7 @@ SELECT
 FROM
   trip_table
 LEFT JOIN total_time_after_inside USING(trip_id, scenario)
-LEFT JOIN last_point_after_inside USING(trip_id, scenario)
+LEFT JOIN first_point_after_inside USING(trip_id, scenario)
 ORDER BY
   trip_id,
   scenario")
@@ -728,13 +917,20 @@ trips_coming_out_final_sql <- "WITH
     SELECT * FROM `emlab-gcp.dominica.trips_out_scenario_2`
     UNION ALL
     SELECT * FROM `emlab-gcp.dominica.trips_out_scenario_3`
+  ),
+  
+  keep as (
+    SELECT
+      * EXCEPT(timestamp_last_in_reserve)
+    FROM
+      all_trip_details
   )
 
 SELECT 
   *
 FROM
-  `emlab-gcp.dominica.trips_out_summary_table`
-LEFT JOIN all_trip_details  USING(trip_id, scenario, last_timestamp_in_reserve)
+  `emlab-gcp.dominica.trips_out_summary_table_raw`
+LEFT JOIN keep USING(trip_id, scenario)
 ORDER BY
   trip_id,
   scenario"

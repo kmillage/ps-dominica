@@ -5,10 +5,6 @@ date: "2023-05-08"
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
-```{r setup, include=FALSE}
 # Packages
 library(DBI)
 library(bigrquery)
@@ -31,21 +27,32 @@ bq_project <-  "emlab-gcp"
 options(scipen = 20)
 
 # Load incoming/outgoing trip data
-dom_voyages <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "dominica_voyages_gfw_2017_2022.csv")) 
+dom_voyages <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "dominica_voyages_gfw_2017_2022.csv")) # All voyages - 26,241
 trips_in <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "trips_in_summary_table.csv"))
 trips_out <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "trips_out_summary_table.csv"))
 ```
 
-# Link voyages coming into and going out of Dominica
+# Link incoming and outgoing voyages
+
+First, let's extract all trips that start and end within Dominica. We'll check to see whether these vessels travel offshore between port visits, and account for their change in travel time differently. 
+
+This includes both voyages between Dominican ports and voyages where the vessel changed positions within the same anchorage. 
 
 ```{r}
-# All voyages - 26,241
-dom_voyages <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "dominica_voyages_gfw_2017_2022.csv")) 
+# 4,160 voyages
+dom_voyages_within <- dom_voyages %>%
+  dplyr::filter(start_is_DMA & end_is_DMA)
+```
 
-# Remove voyages where the start/end anchorage are the same - this likely means the boat just moved from one part of the port to another and we don't need to include those
+Next, let's arrange the remaining voyages by vessel and timestamp and extract info for the next trip chronologically to see if we can match incoming and outgoing trips. 
+
+```{r}
+# 22,081 voyages
+dom_voyages_keep  <- dom_voyages %>%
+  dplyr::filter(!(trip_id %in% dom_voyages_within$trip_id))
 
 # Arrange all voyages by vessel and timestamp. Extract info for the next trip, chronologically and compare for end/start matches. 
-dom_voyages_matching <- dom_voyages %>%
+dom_voyages_matching <- dom_voyages_keep %>%
   dplyr::select(ssvid, trip_id, start_timestamp, start_anchorage_name, start_iso3, start_is_DMA, end_timestamp, end_anchorage_name, end_iso3, end_is_DMA) %>%
   arrange(ssvid, start_timestamp) %>%
   group_by(ssvid) %>%
@@ -59,52 +66,54 @@ dom_voyages_matching <- dom_voyages %>%
          same_end_and_start_anchorage = ifelse(end_anchorage_name == next_start_anchorage_name, T, F))
 ```
 
+We want the visit to Dominica to be the midpoint of the round trip, so let's start by getting incoming trips and find their outgoing matches. 
+
+Which voyages match by anchorage? 
+
 ```{r}
-# First, get voyages that begin internationally to come to Dominica, where the next chronological trip ends internationally
-# Find those with an outgoing match. The next trip by the same vessel leaves from the same port in the same couuntry. 
-dom_voyages_in_matched <- dom_voyages_matching %>%
-  dplyr::filter(!start_is_DMA & end_is_DMA & !next_end_is_DMA)  %>%
+# Find the incoming trips with an exact outgoing match (the next trip departs from the same port) 
+dom_voyages_match_anchorage <- dom_voyages_matching %>%
+  dplyr::filter(!start_is_DMA) %>%
   dplyr::filter(same_end_and_start_iso3 & same_end_and_start_anchorage)
 
 # Reformat
-voyages_in_out_lookup <- dom_voyages_in_matched %>%
+voyages_in_out_lookup <- dom_voyages_match_anchorage %>%
   dplyr::select(ssvid, trip_id_in = trip_id, trip_id_out = next_trip_id) %>%
-  mutate(trip_id_move = NA) %>%
-  distinct(ssvid, trip_id_in, trip_id_move, trip_id_out)
+  distinct(ssvid, trip_id_in, trip_id_out)
 
-# Total trips accounted for - 13,194
+# Total trips accounted for - 13,938
 trips_accounted_for <- unique(c(voyages_in_out_lookup$trip_id_in, voyages_in_out_lookup$trip_id_out))
 ```
 
+Which voyages match by country, but not anchorage? 
+
 ```{r}
-# Next, find voyages that begin internationally to come to Dominica, where the next chronological trip ends in another port in Dominica.
-dom_voyages_in_and_move_matched <- dom_voyages_matching %>%
-  dplyr::filter(!(trip_id %in% trips_accounted_for)) %>% # Remaining voyages: 13,047
-  dplyr::filter(!start_is_DMA & end_is_DMA & next_end_is_DMA) %>%
-  dplyr::filter(same_end_and_start_iso3 & same_end_and_start_anchorage)
+# Find those with a close outgoing match (the next trip departs from the same country)
+dom_voyages_match_iso3 <- dom_voyages_matching %>%
+  dplyr::filter(!start_is_DMA) %>%
+  dplyr::filter(same_end_and_start_iso3 & !same_end_and_start_anchorage)
 
 # Reformat
-add_vessels <- dom_voyages_in_and_move_matched %>%
-  dplyr::select(ssvid, trip_id_in = trip_id, trip_id_move = next_trip_id) %>%
-  mutate(trip_id_out = NA) %>%
-  distinct(ssvid, trip_id_in, trip_id_move, trip_id_out)
-  
-# Now find outgoing trips that might match
-dom_voyages_out <- dom_voyages_matching %>%
-  dplyr::filter(trip_id %in% add_vessels$trip_id_move) %>%
-  dplyr::filter(!next_end_is_DMA) %>%
-  dplyr::filter(same_end_and_start_iso3 & same_end_and_start_anchorage)
+voyages_to_add <- dom_voyages_match_iso3 %>%
+  dplyr::select(ssvid, trip_id_in = trip_id, trip_id_out = next_trip_id) %>%
+  distinct(ssvid, trip_id_in, trip_id_out)
 
-
-dom_voyages_not_matched <- dom_voyages_matching %>%
-  dplyr::filter(!(trip_id %in% dom_voyages_in_matched$trip_id) & !(trip_id %in% dom_voyages_in_matched$next_trip_id))
-
-
-# Get voyages within Dominica
-dom_voyages_
+# Total trips accounted for - 7,032
+trips_accounted_for2 <- unique(c(voyages_to_add$trip_id_in, voyages_to_add$trip_id_out))
 ```
 
+```{r}
+# All trips accounted for
+trips_accounted_for_all <- c(trips_accounted_for, trips_accounted_for2)
+```
 
+Now let's see what we missed... We'll just treat these as one-way trips for now
+
+```{r}
+# Find non-matched trips - 1,111
+dom_voyages_not_matched <- dom_voyages_matching %>%
+  dplyr::filter(!(trip_id %in% trips_accounted_for_all))
+```
 
 # Identify some test segments to pull raw positions from
 
@@ -163,6 +172,7 @@ demo_tracks <- bq_project_query(bq_project,
                  allowLargeResults = TRUE) %>%
   bq_table_download()
 ```
+
 ```{r}
 demo_tracks_sf <- demo_tracks %>%
   st_as_sf(coords = c("lon", "lat"),
