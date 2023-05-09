@@ -17,14 +17,11 @@ source(here::here("common.R"))
 # Load reserve boundaries
 load(here::here("results", "reserve_boundaries.Rdata"))
 
-# Setup BQ connections
-bq_auth_id <- "kmillage@ucsb.edu"
+# New reserve boundaries? 
+new_reserve <- FALSE
 
-# Bigquery project for billing
-bq_project <-  "emlab-gcp"
-
-# Solution to bigrquery error (August 5, 2020) - see https://github.com/r-dbi/bigrquery/issues/395 for details
-options(scipen = 20)
+# New voyages data? 
+new_voyages <- FALSE
 ```
 
 # Introduction
@@ -36,6 +33,7 @@ This script queries the GFW research messages tables to get more information for
 Since we're interested in finding the last AIS position (for vessels arriving in Dominica) outside of the proposed reserve boundaries [or first in the case of vessels departing Dominica] we need to first upload the reserve boundaries we created to Bigquery. For some reason, the values got screwed up if I specified that the geometry column was of type "GEOGRAPHY" directly. So I'm first uploading the coordinates for the polygons as a string, and then converting it to the correct format once it's in Bigquery. 
 
 ```{r}
+if(new_reserve){
 # Convert geometry list column to text that Bigquery will be able to read
 reserve_boundaries_upload <- reserve_boundaries_sf %>%
   st_transform(crs = 4326) %>%
@@ -55,17 +53,17 @@ reserve_boundaries_table <- bq_table(project = bq_project,
 reserve_boundaries_table %>%
   bq_table_upload(fields = table_fields, values = reserve_boundaries_upload,
                   write_disposition = 'WRITE_TRUNCATE')
+}
 ```
 
 ```{r}
+if(new_reserve){
 reserve_sql <- "
 SELECT 
   scenario,
   ST_GEOGFROMTEXT(geometry) AS geom
 FROM `emlab-gcp.dominica.reserve_boundaries_raw`"
-```
 
-```{r}
 # Table to save output
 reserve_table <- bq_table(project = bq_project,
                           table = "reserve_boundaries_fixed",
@@ -83,13 +81,15 @@ bq_project_query(bq_project,
                  destination_table = reserve_table,
                  use_legacy_sql = FALSE,
                  allowLargeResults = TRUE)
+}
 ```
 
 # Extract raw positional data for trips starting/ending in Dominica
 
-Next we need to query the raw positional data for trips we identified as starting/ending in Dominica. This is an example query to pull the relevant positions for 2017 - 2022. This took ~3 minutes and probably cost $5. This shouldn't need to be rerun unless Tyler suggests a better way to match voyages to raw positions.
+Next we need to query the raw positional data for trips we identified as starting/ending in Dominica. This is an example query to pull the relevant positions for 2017 - 2022. This takes ~5-10 minutes and probably costs $5. This shouldn't need to be rerun unless the list of voyages changes (i.e., we decide to use a different confidence interval) or we need additional years.
 
 ```{r}
+if(new_voyages){
 relevant_positions_sql <- 'WITH 
 
   ########################################
@@ -160,13 +160,11 @@ SELECT
   *
 FROM
   positions_keep
-LEFT JOIN good_trip_info USING(trip_id)
+LEFT JOIN good_trip_info USING(trip_id, ssvid)
 ORDER BY
   trip_id,
   timestamp'
-```
 
-```{r query-positions, eval=F}
 # # NOTE - DO NOT RERUN UNLESS ABSOLUTELY NECESSARY
 # # Table to save output
 # positions_table <- bq_table(project = bq_project,
@@ -180,11 +178,12 @@ ORDER BY
 # }
 # 
 # # Run query
-# bq_project_query(bq_project, 
+# bq_project_query(bq_project,
 #                  query = relevant_positions_sql,
 #                  destination_table = positions_table,
 #                  use_legacy_sql = FALSE,
 #                  allowLargeResults = TRUE)
+}
 ```
 
 # Match relevant positions to reserve boundaries
@@ -192,6 +191,7 @@ ORDER BY
 The next step is to determine which positions fall within our reserve boundaries. We're doing this in a separate step so we only have to query the 9 TB table once - this one is about 900 MB. 
 
 ```{r}
+if(new_reserve | new_voyages){
 positions_spatial_sql <- 'WITH
 
   positions_inside AS(
@@ -221,9 +221,7 @@ FROM
 ORDER BY
   trip_id,
   timestamp'
-```
 
-```{r query-positions-spatial, eval=F}
 # Table to save output
 positions_spatial_table <- bq_table(project = bq_project,
                                     table = "all_positions_matched_to_reserve_2017_2022",
@@ -241,21 +239,22 @@ bq_project_query(bq_project,
                  destination_table = positions_spatial_table,
                  use_legacy_sql = FALSE,
                  allowLargeResults = TRUE)
+}
 ```
 
 # Create a summary table for each trip
 
 We want to know total distance, time, etc. for each trip, as well as the portions of those time(s) spent inside/outside the potential reserve areas. 
-
 ```{r}
+if(new_reserve | new_voyages){
 trip_summary_sql <- "WITH 
 
   trip_totals AS (
     SELECT 
       trip_id,
       ssvid,
-      COUNT(msgid) as messages_total,
-      COUNT(seg_id) as segments_total,
+      COUNT (DISTINCT msgid) as messages_total,
+      COUNT(DISTINCT seg_id) as segments_total,
       SUM(hours) as hours_total,
       SUM(meters_to_prev) as dist_total,
       MIN(timestamp) as timestamp_start,
@@ -295,9 +294,7 @@ ORDER BY
   trip_id,
   timestamp_start,
   scenario"
-```
 
-```{r}
 # Table to save output
 trip_summary_table <- bq_table(project = bq_project,
                                     table = "trip_summary_table_initial_2017_2022",
@@ -315,18 +312,23 @@ bq_project_query(bq_project,
                  destination_table = trip_summary_table,
                  use_legacy_sql = FALSE,
                  allowLargeResults = TRUE)
+
+}
 ```
+
 ## Trips into Dominica
 
 Next, let's split our trips into those that are coming into Dominica, and those that are going out. Starting with those coming in, let's get some additional summary features for all of these trips.
 
 ```{r}
+if(new_reserve | new_voyages){
 trips_coming_in_sql <- "WITH 
 
   voyages_into_dom AS (
     SELECT
       trip_id,
       ssvid,
+      start_year as year,
       start_iso3,
       start_anchorage_id,
       start_anchorage_name,
@@ -344,12 +346,11 @@ trips_coming_in_sql <- "WITH
 
   vessel_info AS (
     SELECT DISTINCT
-      CAST(mmsi as string) as ssvid,
-      geartype as vessel_type
+      ssvid,
+      year,
+      shiptype as vessel_type
     FROM
-      `world-fishing-827.vessel_database.all_vessels_20190102`
-    WHERE
-      geartype is not null
+      `world-fishing-827.pipe_production_v20201001.all_vessels_byyear_v20230401`
   ),
   
   all_relevant_positions AS (
@@ -408,6 +409,7 @@ trips_coming_in_sql <- "WITH
 SELECT 
   trip_id,
   ssvid,
+  year,
   vessel_type,
   start_iso3,
   start_anchorage_id,
@@ -434,7 +436,7 @@ SELECT
   last_timestamp_in_reserve as timestamp_last_in_reserve
 FROM
   voyages_into_dom
-LEFT JOIN vessel_info USING (ssvid)
+LEFT JOIN vessel_info USING (ssvid, year)
 LEFT JOIN `emlab-gcp.dominica.trip_summary_table_initial_2017_2022` USING(trip_id, ssvid)
 LEFT JOIN first_position USING (trip_id)
 LEFT JOIN last_position USING (trip_id)
@@ -442,9 +444,7 @@ ORDER BY
   trip_id,
   scenario,
   timestamp_start"
-```
 
-```{r}
 # Table to save output
 trips_in_table <- bq_table(project = bq_project,
                            table = "trips_in_summary_table_raw",
@@ -462,11 +462,14 @@ bq_project_query(bq_project,
                  destination_table = trips_in_table,
                  use_legacy_sql = FALSE,
                  allowLargeResults = TRUE)
+}
 ```
 
-Next we need to find the last position before each vessel entered the potential reserve for each scenario. I wasn't having any luck doing this for all scenarios at once, so we're going to loop over scenarios. 
+Next we need to find the last position before each vessel entered the potential reserve for each scenario. I wasn't having any luck doing this for all scenarios at once, so we're going to loop over scenarios and then join them together in a second step. 
 
 ```{r}
+if(new_reserve | new_voyages){
+  
 scenarios <- unique(reserve_boundaries_sf$scenario)
 
 for(i in 1:length(scenarios)){
@@ -585,6 +588,7 @@ bq_project_query(bq_project,
                  use_legacy_sql = FALSE,
                  allowLargeResults = TRUE)
 }
+}
 ```
 
 And now let's combine all of this back to our summary table...
@@ -641,7 +645,7 @@ write_csv(trips_in, file.path(prj_cachalote_dir, "data", "processed", "trips_in_
 
 ## Trips out of Dominica
 
-Now to do the same with trips going out...
+Now to do the same with outbound trips...
 
 ```{r}
 trips_going_out_sql <- "WITH 
@@ -650,6 +654,7 @@ trips_going_out_sql <- "WITH
     SELECT
       trip_id,
       ssvid,
+      start_year as year,
       start_iso3,
       start_anchorage_id,
       start_anchorage_name,
@@ -667,12 +672,11 @@ trips_going_out_sql <- "WITH
 
   vessel_info AS (
     SELECT DISTINCT
-      CAST(mmsi as string) as ssvid,
-      geartype as vessel_type
+      ssvid,
+      year,
+      shiptype as vessel_type
     FROM
-      `world-fishing-827.vessel_database.all_vessels_20190102`
-    WHERE
-      geartype is not null
+      `world-fishing-827.pipe_production_v20201001.all_vessels_byyear_v20230401`
   ),
   
   all_relevant_positions AS (
@@ -731,6 +735,7 @@ trips_going_out_sql <- "WITH
 SELECT 
   trip_id,
   ssvid,
+  year,
   vessel_type,
   start_iso3,
   start_anchorage_id,
@@ -757,7 +762,7 @@ SELECT
   last_timestamp_in_reserve as timestamp_last_in_reserve
 FROM
   voyages_out_of_dom
-LEFT JOIN vessel_info USING (ssvid)
+LEFT JOIN vessel_info USING (ssvid, year)
 LEFT JOIN `emlab-gcp.dominica.trip_summary_table_initial_2017_2022` USING(trip_id, ssvid)
 LEFT JOIN first_position USING (trip_id)
 LEFT JOIN last_position USING (trip_id)
@@ -765,9 +770,7 @@ ORDER BY
   trip_id,
   scenario,
   timestamp_start"
-```
 
-```{r}
 # Table to save output
 trips_out_table <- bq_table(project = bq_project,
                            table = "trips_out_summary_table_raw",
@@ -787,7 +790,7 @@ bq_project_query(bq_project,
                  allowLargeResults = TRUE)
 ```
 
-Next we need to find the last position before each vessel entered the reserve under each scenario. I wasn't having any luck doing this all at once, so we're going to loop over scenarios. 
+Next we need to find the first position after each vessel leaves the reserve under each scenario. I wasn't having any luck doing this all at once, so we're going to loop over scenarios and join them back together in a second step. 
 
 ```{r}
 for(i in 1:length(scenarios)){
@@ -957,4 +960,272 @@ trips_out <- bq_project_query(bq_project,
 # Save locally too
 write_csv(trips_out, file.path(prj_cachalote_dir, "data", "processed", "trips_out_summary_table.csv"))
 ```
+## Trips within Dominica
+
+We also have a number of trips within Dominica where vessels are moving from one Dominican port to another. In theory these trips won't be affected by the reserve because they can transit from port to port in the 2nm nearshore zone. However, let's see how many of these voyages crossed the potential reserve area at some point in time.  
+
+```{r}
+trips_within_sql <- "WITH 
+
+  voyages_within_dom AS (
+    SELECT
+      trip_id,
+      ssvid,
+      start_year as year,
+      start_iso3,
+      start_anchorage_id,
+      start_anchorage_name,
+      start_is_DMA,
+      end_iso3,
+      end_anchorage_id,
+      end_anchorage_name,
+      end_is_DMA
+    FROM
+      `emlab-gcp.dominica.dominica_voyages_2017_2022`
+    WHERE
+      start_is_DMA 
+      AND end_is_DMA
+  ),
+
+  vessel_info AS (
+    SELECT DISTINCT
+      ssvid,
+      year,
+      shiptype as vessel_type
+    FROM
+      `world-fishing-827.pipe_production_v20201001.all_vessels_byyear_v20230401`
+  ),
+  
+  all_relevant_positions AS (
+    SELECT DISTINCT
+      msgid,
+      trip_id,
+      ssvid,
+      timestamp,
+      lat,
+      lon,
+      speed_knots,
+      meters_to_prev,
+      hours
+    FROM
+      `emlab-gcp.dominica.all_positions_matched_to_reserve_2017_2022`
+    WHERE
+      trip_id IN (
+          SELECT
+            trip_id
+          FROM
+            voyages_within_dom)
+  ),
+
+  first_position AS(
+      SELECT
+        trip_id,
+        lat as lat_start,
+        lon as lon_start,
+      FROM (
+        SELECT RANK() OVER (PARTITION BY trip_id ORDER BY timestamp) AS i,
+          trip_id,
+          lat,
+          lon
+        FROM
+          all_relevant_positions
+      ) AS pos
+      WHERE pos.i = 1
+  ),
+
+  last_position AS(
+      SELECT
+        trip_id,
+        lat as lat_end,
+        lon as lon_end,
+      FROM (
+        SELECT RANK() OVER (PARTITION BY trip_id ORDER BY timestamp desc) AS b,
+          trip_id,
+          lat,
+          lon
+        FROM
+          all_relevant_positions
+      ) AS pos
+      WHERE pos.b = 1
+  )
+
+SELECT 
+  trip_id,
+  ssvid,
+  year,
+  vessel_type,
+  start_iso3,
+  start_anchorage_id,
+  start_anchorage_name,
+  start_is_DMA,
+  end_iso3,
+  end_anchorage_id,
+  end_anchorage_name,
+  end_is_DMA,
+  messages_total,
+  segments_total,
+  hours_total,
+  dist_total,
+  timestamp_start,
+  lat_start,
+  lon_start,
+  timestamp_end,
+  lat_end,
+  lon_end,
+  scenario,
+  hours_in_reserve,
+  distance_in_reserve as dist_in_reserve,
+  first_timestamp_in_reserve as timestamp_first_in_reserve,
+  last_timestamp_in_reserve as timestamp_last_in_reserve
+FROM
+  voyages_within_dom
+LEFT JOIN vessel_info USING (ssvid, year)
+LEFT JOIN `emlab-gcp.dominica.trip_summary_table_initial_2017_2022` USING(trip_id, ssvid)
+LEFT JOIN first_position USING (trip_id)
+LEFT JOIN last_position USING (trip_id)
+ORDER BY
+  trip_id,
+  scenario,
+  timestamp_start"
+
+# Table to save output
+trips_within_table <- bq_table(project = bq_project,
+                           table = "trips_within_summary_table_raw",
+                           dataset = "dominica")
+
+if(bq_table_exists(trips_within_table)){
+  bq_table_delete(trips_within_table)
+}else{
+  bq_table_create(trips_within_table)
+}
+
+# Run query
+bq_project_query(bq_project,
+                 query = trips_within_sql,
+                 destination_table = trips_within_table,
+                 use_legacy_sql = FALSE,
+                 allowLargeResults = TRUE)
+
+```
+
+<!-- Next we need to find the first position after each vessel leaves the reserve under each scenario. I wasn't having any luck doing this all at once, so we're going to loop over scenarios and join them back together in a second step.  -->
+
+<!-- ```{r} -->
+<!-- for(i in 1:length(scenarios)){ -->
+
+<!-- first_positions_sql <- paste0("WITH  -->
+
+<!--   trip_table AS ( -->
+<!--     SELECT -->
+<!--       trip_id, -->
+<!--       scenario, -->
+<!--       timestamp_last_in_reserve -->
+<!--     FROM -->
+<!--       `emlab-gcp.dominica.trips_out_summary_table_raw` -->
+<!--     WHERE -->
+<!--       scenario = ", scenarios[i], " -->
+<!--   ), -->
+
+<!--   all_relevant_positions AS ( -->
+<!--     SELECT DISTINCT -->
+<!--       msgid, -->
+<!--       trip_id, -->
+<!--       ssvid, -->
+<!--       timestamp, -->
+<!--       lat, -->
+<!--       lon, -->
+<!--       speed_knots, -->
+<!--       meters_to_prev, -->
+<!--       hours -->
+<!--     FROM -->
+<!--       `emlab-gcp.dominica.all_positions_matched_to_reserve_2017_2022` -->
+<!--     WHERE -->
+<!--       trip_id IN ( -->
+<!--           SELECT -->
+<!--             trip_id -->
+<!--           FROM -->
+<!--             trip_table) -->
+<!--   ), -->
+
+<!--   points_after_inside AS( -->
+<!--       SELECT -->
+<!--         msgid, -->
+<!--         tp.trip_id, -->
+<!--         ssvid, -->
+<!--         timestamp, -->
+<!--         lat, -->
+<!--         lon, -->
+<!--         speed_knots, -->
+<!--         meters_to_prev, -->
+<!--         hours, -->
+<!--         tp.scenario -->
+<!--       FROM -->
+<!--         all_relevant_positions as ap -->
+<!--       JOIN trip_table as tp -->
+<!--         ON ap.trip_id = tp.trip_id -->
+<!--         AND ap.timestamp > tp.timestamp_last_in_reserve -->
+<!--   ), -->
+
+<!--   total_time_after_inside AS( -->
+<!--     SELECT -->
+<!--       trip_id, -->
+<!--       scenario, -->
+<!--       sum(hours) as hours_after_reserve, -->
+<!--       sum(meters_to_prev) as distance_after_reserve -->
+<!--     FROM -->
+<!--       points_after_inside -->
+<!--     GROUP BY -->
+<!--       trip_id, -->
+<!--       scenario -->
+<!--   ), -->
+
+<!--   first_point_after_inside AS( -->
+<!--       SELECT -->
+<!--         trip_id, -->
+<!--         scenario, -->
+<!--         timestamp as timestamp_first_after_reserve, -->
+<!--         lat as lat_first_after_reserve, -->
+<!--         lon as lon_first_after_reserve -->
+<!--       FROM ( -->
+<!--         SELECT RANK() OVER (PARTITION BY trip_id, scenario ORDER BY timestamp) AS fi, -->
+<!--           trip_id, -->
+<!--           scenario, -->
+<!--           timestamp, -->
+<!--           lat, -->
+<!--           lon -->
+<!--         FROM -->
+<!--           points_after_inside -->
+<!--       ) AS ST -->
+<!--       WHERE ST.fi = 1 -->
+<!--   ) -->
+
+<!-- SELECT  -->
+<!--   * -->
+<!-- FROM -->
+<!--   trip_table -->
+<!-- LEFT JOIN total_time_after_inside USING(trip_id, scenario) -->
+<!-- LEFT JOIN first_point_after_inside USING(trip_id, scenario) -->
+<!-- ORDER BY -->
+<!--   trip_id, -->
+<!--   scenario") -->
+
+<!-- # Table to save output -->
+<!-- trip_positions_table2 <- bq_table(project = bq_project, -->
+<!--                            table = paste0("trips_out_scenario_", scenarios[i]), -->
+<!--                            dataset = "dominica") -->
+
+<!-- if(bq_table_exists(trip_positions_table2)){ -->
+<!--   bq_table_delete(trip_positions_table2) -->
+<!-- }else{ -->
+<!--   bq_table_create(trip_positions_table2) -->
+<!-- } -->
+
+<!-- # Run query -->
+<!-- bq_project_query(bq_project, -->
+<!--                  query = first_positions_sql, -->
+<!--                  destination_table = trip_positions_table2, -->
+<!--                  use_legacy_sql = FALSE, -->
+<!--                  allowLargeResults = TRUE) -->
+<!-- } -->
+<!-- ``` -->
 

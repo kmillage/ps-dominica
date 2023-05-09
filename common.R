@@ -20,6 +20,15 @@ library(raster)
 library(broom)
 library(lubridate)
 
+# Setup BQ connections
+bq_auth_id <- "kmillage@ucsb.edu"
+
+# Bigquery project for billing
+bq_project <-  "emlab-gcp"
+
+# Solution to bigrquery error (August 5, 2020) - see https://github.com/r-dbi/bigrquery/issues/395 for details
+options(scipen = 20)
+
 # Code chunk defaults
 knitr::opts_chunk$set(echo = FALSE, error = FALSE, message = FALSE, warning = FALSE, include = TRUE, fig.align = 'center')
 

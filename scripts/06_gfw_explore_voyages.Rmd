@@ -1,0 +1,159 @@
+---
+title: "Dominica: Explore details for incoming and outgoing trips to Dominica"
+output: html_document
+date: "2023-05-08"
+---
+
+```{r setup, include=FALSE}
+# Packages
+# library(DBI)
+# library(bigrquery)
+# library(networkD3) # Make flow diagram
+# library(webshot) # Save static version of flow diagram
+
+# Load common helper script
+source(here::here("common.R"))
+
+# Load reserve boundaries
+load(here::here("results", "reserve_boundaries.Rdata"))
+
+# # Setup BQ connections
+# bq_auth_id <- "kmillage@ucsb.edu"
+# 
+# # Bigquery project for billing
+# bq_project <-  "emlab-gcp"
+# 
+# # Solution to bigrquery error (August 5, 2020) - see https://github.com/r-dbi/bigrquery/issues/395 for details
+# options(scipen = 20)
+
+# Load data we need
+dom_voyages <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "dominica_voyages_gfw_2017_2022.csv")) # All voyages - 26,241
+trips_in <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "trips_in_summary_table.csv"))
+trips_out <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "trips_out_summary_table.csv"))
+load(file.path(prj_cachalote_dir, "data", "processed", "dominica_anchorage_centroids_gfw.Rdata"))
+
+centroids <- dom_ports_centroid_sf %>%
+  sf::st_transform(crs = prj_moll)
+```
+
+# Check for missing values
+
+Let's figure out whether we're missing data for any voyages and whether any trips should be excluded.  
+
+## Inbound voyages
+
+```{r}
+# Inbound voyages
+inbound_voyages_pos <- trips_in %>% distinct(trip_id) %>% pull()
+inbound_voyages_all <- dom_voyages %>% dplyr::filter(!start_is_DMA & end_is_DMA) %>% distinct(trip_id) %>% pull()
+
+# Do we have the same trips represented in the data? Yes. 
+abs(length(inbound_voyages_pos) - length(inbound_voyages_all))
+
+# Do we have any trips with missing positional information. Yes - 7
+inbound_voyages_nas <- trips_in %>% dplyr::filter(is.na(lat_start) | is.na(lon_start) | is.na(lat_end) | is.na(lon_end)) %>%
+  distinct(trip_id) %>% pull()
+
+# Good inbound trips
+inbound_voyages_good <- trips_in %>% dplyr::filter(!is.na(lat_start) & !is.na(lon_start) & !is.na(lat_end) & !is.na(lon_end)) %>%
+  distinct(trip_id) %>% pull()
+
+# Determine the proportion of trips that would be affected by each reserve scenario
+inbound_prop_affected <- trips_in %>%
+  dplyr::filter(!(trip_id %in% inbound_voyages_nas)) %>%
+  summarize(prop_unaffected = length(unique(trip_id[is.na(scenario)]))/length(inbound_voyages_good),
+            prop_affected_scenario_1 = length(unique(trip_id[scenario == 1]))/length(inbound_voyages_good),
+            prop_affected_scenario_2 = length(unique(trip_id[scenario == 2]))/length(inbound_voyages_good),
+            prop_affected_scenario_3 = length(unique(trip_id[scenario == 3]))/length(inbound_voyages_good)) %>%
+  gather()
+
+head(inbound_prop_affected)
+```
+
+## Outbound voyages
+
+```{r}
+# Inbound voyages
+outbound_voyages_pos <- trips_out %>% distinct(trip_id) %>% pull()
+outbound_voyages_all <- dom_voyages %>% dplyr::filter(start_is_DMA & !end_is_DMA) %>% distinct(trip_id) %>% pull()
+
+# Do we have the same trips represented in the data? Yes. 
+abs(length(outbound_voyages_pos) - length(outbound_voyages_all))
+
+# Do we have any trips with missing positional information. Yes - 5
+outbound_voyages_nas <- trips_out %>% dplyr::filter(is.na(lat_start) | is.na(lon_start) | is.na(lat_end) | is.na(lon_end)) %>%
+  distinct(trip_id) %>% pull()
+
+# Good outbound trips
+outbound_voyages_good <- trips_out %>% dplyr::filter(!is.na(lat_start) & !is.na(lon_start) & !is.na(lat_end) & !is.na(lon_end)) %>%
+  distinct(trip_id) %>% pull()
+
+# Determine the proportion of trips that would be affected by each reserve scenario
+outbound_prop_affected <- trips_out %>%
+  summarize(prop_unaffected = length(unique(trip_id[is.na(scenario)]))/length(outbound_voyages_good),
+            prop_affected_scenario_1 = length(unique(trip_id[scenario == 1]))/length(outbound_voyages_good),
+            prop_affected_scenario_2 = length(unique(trip_id[scenario == 2]))/length(outbound_voyages_good),
+            prop_affected_scenario_3 = length(unique(trip_id[scenario == 3]))/length(outbound_voyages_good)) %>%
+  gather()
+
+head(outbound_prop_affected)
+```
+
+# Which port(s) in "FRA" are involved? 
+
+The distance(s) traveled for trips originating in, or ending in, "FRA" ISO3 don't seem to be long enough to actually be trips to France. Is this French Guiana? 
+
+```{r}
+# Get ports
+fra_ports_in <- trips_in %>%
+  dplyr::filter(start_iso3 == "FRA") %>%
+  distinct(start_anchorage_name) %>%
+  pull()
+
+# Looks like we have the following
+paste(fra_ports_in, collapse = ", ")
+
+# LE GOSIER, DESHAIES, BAIE DU MARIGOT are in Guadeloupe
+# SCHOELCHER is in Martineque; MTQ-16 is probably in Martinique
+# Port d’Hyères, LA PALLICE, CAMARET-SUR-MER, and ANTIBES are actually in France, 
+# ST MARTIN is in Saint Martin; MAF-2 is probably in Saint Martin
+```
+
+```{r}
+# Get ports
+fra_ports_out <- trips_out %>%
+  dplyr::filter(end_iso3 == "FRA") %>%
+  distinct(end_anchorage_name) %>%
+  pull()
+
+# Looks like we have the following
+paste(fra_ports_out, collapse = ", ")
+
+# LE GOSIER, DESHAIES, BAIE DU MARIGOT are in Guadeloupe
+# SCHOELCHER is in Martineque; MTQ-16 is probably in Martinique
+# Port d’Hyères, LA PALLICE, CAMARET-SUR-MER, and ANTIBES are actually in France, 
+# ST MARTIN is in Saint Martin; MAF-2 is probably in Saint Martin
+# CK is unknown
+```
+
+# Distance of start/end positions to anchorage centroids
+
+Since we're using the centroid anchorage coordinates for out distance matrices, we might need to add a bit of extra time/distance based on the actual end points of each trip. Let's see how far our start/end coordinates are from the anchorage centroids. 
+
+## Inbound trips
+
+NOTE - I need to see if there's a more efficient way of doing this. This process takes forever. 
+
+```{r}
+trips_in_dist <- trips_in %>%
+  dplyr::filter(trip_id %in% inbound_voyages_good) %>%
+  dplyr::distinct(trip_id, lat_end, lon_end, end_anchorage_id) %>%
+  st_as_sf(coords = c("lon_end", "lat_end"),
+           crs = 4326,
+           remove = F) %>%
+  sf::st_transform(crs = st_crs(prj_moll)) %>% # convert points to Mollewide
+  rowwise() %>%
+  mutate(diff_from_centroid = st_distance(geometry, centroids$geometry[centroids$anchorage_id == end_anchorage_id]))
+```
+
+## Outbound trips

@@ -1,5 +1,5 @@
 ---
-title: "Dominica: Process GFW Voyage Data"
+title: "Dominica: Identify anchorages in Dominica and voyages starting or ending there"
 output: html_document
 date: "2023-05-01"
 ---
@@ -16,15 +16,6 @@ source(here::here("common.R"))
 
 # Load reserve boundaries
 load(here::here("results", "reserve_boundaries.Rdata"))
-
-# Setup BQ connections
-bq_auth_id <- "kmillage@ucsb.edu"
-
-# Bigquery project for billing
-bq_project <-  "emlab-gcp"
-
-# Solution to bigrquery error (August 5, 2020) - see https://github.com/r-dbi/bigrquery/issues/395 for details
-options(scipen = 20)
 ```
 
 # Introduction
@@ -134,7 +125,7 @@ anchorage_centroid_plot <- ggplot()+
 
 ggsave(file.path(prj_cachalote_dir, "figures", "dominica_anchorage_groups.png"), anchorage_centroid_plot, height = 8, width = 8)
 
-anchorages_plot
+anchorage_centroid_plot
 ```
 
 ```{r}
@@ -146,9 +137,7 @@ save(dom_ports_centroid_sf,
 # Identify voyages starting or ending at anchorages in Dominica
 
 ```{r}
-sql_dom_voyages <- "#StandardSQL
-
-WITH 
+sql_dom_voyages <- "WITH 
 
   #########################
   # Anchorage info we want to add to this table
@@ -184,7 +173,7 @@ WITH
         EXTRACT(YEAR FROM trip_start) AS start_year,
         EXTRACT(YEAR FROM trip_end) AS end_year
       FROM  
-        `world-fishing-827.pipe_production_v20201001.voyages`
+        `world-fishing-827.pipe_production_v20201001.proto_voyages_c4`
       WHERE
         EXTRACT(YEAR FROM trip_start) > 2016 
         AND EXTRACT(YEAR FROM trip_end) < 2023
@@ -197,14 +186,14 @@ WITH
                   SELECT
                     anchorage_id
                   FROM
-                    `emlab-gcp.dominica.port_index`)         
+                    `emlab-gcp.dominica.port_index`)
       UNION ALL
       SELECT 
         *,
         EXTRACT(YEAR FROM trip_start) AS start_year,
         EXTRACT(YEAR FROM trip_end) AS end_year
       FROM  
-        `world-fishing-827.pipe_production_v20201001.voyages`
+        `world-fishing-827.pipe_production_v20201001.proto_voyages_c4`
       WHERE
         EXTRACT(YEAR FROM trip_start) > 2016 
         AND EXTRACT(YEAR FROM trip_end) < 2023
@@ -214,6 +203,11 @@ WITH
                   FROM
                     bad_mmsi)
           AND trip_end_anchorage_id IN (
+                  SELECT
+                    anchorage_id
+                  FROM
+                    `emlab-gcp.dominica.port_index`)
+          AND trip_start_anchorage_id NOT IN (
                   SELECT
                     anchorage_id
                   FROM
@@ -271,12 +265,229 @@ dom_voyages <- bq_project_query(bq_project,
 write_csv(dom_voyages, file.path(prj_cachalote_dir, "data", "processed", "dominica_voyages_gfw_2017_2022.csv"))
 ```
 
-# Frequency of voyages by start/end country
+# Summarize
+
+First, lets figure out how many inbound, outgoing, and domestic voyages we have between 2017 and 2022. Then let's make sure we don't have any voyages that don't meet one of these three classifications.  
+
+```{r}
+# 2,068 domestic voyages (starting and ending in Dominica)
+domestic_voyages <- dom_voyages %>%
+  dplyr::filter(start_is_DMA & end_is_DMA) %>%
+  distinct(trip_id)
+
+# 10,837 inbound voyages
+in_voyages <- dom_voyages %>%
+  dplyr::filter(!start_is_DMA & end_is_DMA) %>%
+  distinct(trip_id)
+
+# 11,078 outgoing voyages
+out_voyages <- dom_voyages %>%
+  dplyr::filter(start_is_DMA & !end_is_DMA) %>%
+  distinct(trip_id)
+
+# 23,983 total voyages
+all_voyages <- c(domestic_voyages$trip_id, in_voyages$trip_id, out_voyages$trip_id)
+
+# Are we missing any? No. 
+other_voyages <- dom_voyages %>%
+  dplyr::filter(!(trip_id %in% all_voyages)) %>%
+  distinct(trip_id)
+
+# Do we have duplicate rows in our voyage table? No. 
+n_rows_per_trip <- dom_voyages %>%
+  group_by(trip_id, ssvid) %>%
+  summarize(n_rows = n()) %>%
+  dplyr::filter(n_rows > 1)
+```
+
+```{r}
+# Let's do some simple classifications for our voyages: 
+voyage_classification <- dom_voyages %>%
+  mutate(classification = case_when(trip_id %in% domestic_voyages$trip_id ~ "Domestic",
+                                    trip_id %in% in_voyages$trip_id ~ "Inbound",
+                                    trip_id %in% out_voyages$trip_id ~ "Outbound")) %>%
+  group_by(classification) %>%
+  summarize(n_voyages = n(),
+            average_duration = mean(voyage_duration_h),
+            total_duration = sum(voyage_duration_h),
+            min_duration = min(voyage_duration_h),
+            max_duration = max(voyage_duration_h))
+
+head(voyage_classification)
+```
+
+## Get maps of start/end anchorages outside of Dominica
+
+```{r}
+other_anchorage_sql <- 'WITH
+
+  ports as (
+    SELECT 
+      *,
+      "origin" as type
+    FROM 
+      `world-fishing-827.anchorages.named_anchorages_v20230302`
+    WHERE 
+      s2id IN (
+        SELECT DISTINCT
+          start_anchorage_id
+        FROM
+          `emlab-gcp.dominica.dominica_voyages_2017_2022`
+        WHERE
+          start_is_DMA = FALSE
+      )
+    UNION ALL
+    SELECT 
+      *,
+      "destination" as type
+    FROM 
+    `world-fishing-827.anchorages.named_anchorages_v20230302`
+    WHERE 
+      s2id IN (
+        SELECT DISTINCT
+          end_anchorage_id
+        FROM
+          `emlab-gcp.dominica.dominica_voyages_2017_2022`
+        WHERE
+          end_is_DMA = FALSE
+      )
+  )
+
+  SELECT DISTINCT
+    type,
+    s2id AS anchorage_id,
+    label AS anchorage_name,
+    sublabel AS anchorage_sublabel,
+    lat,
+    lon,
+    total_visits,
+    top_destination,
+    iso3,
+    distance_from_shore_m,
+    dock
+  FROM 
+    ports 
+  ORDER BY
+    iso3,
+    anchorage_name'
+```
+
+```{r query-voyages, eval=F}
+# Table to save output
+other_anchorage_table <- bq_table(project = bq_project,
+                            table = "all_relevant_ports",
+                            dataset = "dominica")
+
+if(bq_table_exists(other_anchorage_table)){
+  bq_table_delete(other_anchorage_table)
+}else{
+  bq_table_create(other_anchorage_table)
+}
+
+# Run query
+other_ports <- bq_project_query(bq_project, 
+                                query = other_anchorage_sql,
+                                destination_table = other_anchorage_table,
+                                use_legacy_sql = FALSE,
+                                allowLargeResults = TRUE) %>%
+  bq_table_download()
+```
+
+```{r}
+other_ports_sf <- other_ports %>%
+  group_by(anchorage_id) %>%
+  mutate(category = case_when(length(type) == 2 ~ "Both",
+                              type == "origin" ~ "Origin",
+                              type == "destination" ~ "Destination"),
+         category = factor(category, levels = c("Origin", "Destination", "Both"))) %>%
+  distinct(anchorage_id, anchorage_name, lat, lon, iso3, category) %>%
+  st_as_sf(coords = c("lon", "lat"),
+           crs = 4326,
+           remove = F) %>%
+  sf::st_transform(crs = st_crs(prj_moll)) # convert points to Mollewide
+
+# Plot 
+other_port_plot <- ggplot()+
+  #geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
+  #geom_sf(data = reserve_boundaries_sf, aes(fill = scenario), alpha = 0.3)+
+  geom_sf(data = other_ports_sf, aes(color = category), size = 0.5)+
+  #coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)+
+  theme_basic()+
+  map_layer_moll+
+  guides(color = guide_legend(title = "Anchorage group", nrow = 3),
+         fill = "none")+
+  labs(title = "Start and end ports for voyages to Dominica as identified by GFW")
+
+ggsave(file.path(prj_cachalote_dir, "figures", "dominica_start_and_end_ports.png"), other_port_plot, height = 8, width = 8)
+
+other_port_plot
+```
+
+### Correct mislabeled port ISO3 codes
+
+We've noticed that the distances traveled for certain start/end ports based on ISO 3 code don't seem right. Particularly the following: 
+- FRA
+
+Let's look closer at these and relabel them if necessary
+
+```{r}
+# Get french ports
+fra_ports <- other_ports_sf %>%
+  dplyr::filter(iso3 == "FRA")
+
+# Take a look - We've definitely got three countries in the Caribbean that shouldn't be labeled as "FRA"
+fra_port_plot <- ggplot()+
+  geom_sf(data = fra_ports, aes(color = category), size = 1)+
+  theme_basic()+
+  map_layer_moll+
+  guides(color = guide_legend(title = "Anchorage group", nrow = 3),
+         fill = "none")
+
+fra_port_plot
+```
+
+```{r}
+# Fix the mislabeled ports
+# LE GOSIER, DESHAIES, BAIE DU MARIGOT are in Guadeloupe
+# SCHOELCHER is in Martineque; MTQ-16 is probably in Martinique
+# ST MARTIN is in Saint Martin; MAF-2 is probably in Saint Martin
+fra_ports_fix <- fra_ports %>%
+  dplyr::filter(lat < 20 & lon < -50) %>%
+  mutate(iso3_fixed = case_when(anchorage_name %in% c("BAIE DU MARIGOT", "DESHAIES", "LE GOSIER") ~ "GLP",
+                              anchorage_name %in% c("MAF-2", "ST MARTIN") ~ "MAF",
+                              anchorage_name %in% c("MTQ-16", "SCHOELCHER") ~ "MTQ")) %>%
+  st_drop_geometry()
+
+# Now add these back to the port lookup file
+other_ports_out <- other_ports_sf %>%
+  left_join(fra_ports_fix %>% dplyr::select(anchorage_id, iso3_fixed), by = "anchorage_id") %>%
+  mutate(iso3_fixed = ifelse(!is.na(iso3_fixed), iso3_fixed, iso3))
+
+# Save locally too
+save(other_ports_out, file = file.path(prj_cachalote_dir, "data", "processed", "origin_and_destination_ports.Rdata"))
+```
+
+## Frequency of voyages by start/end country
 
 ```{r}
 # Summarize by start/end - country level only
 freq_voyages_by_iso3 <- dom_voyages %>%
-  group_by(start_year, start_iso3, end_iso3) %>%
+ mutate(classification = case_when(trip_id %in% domestic_voyages$trip_id ~ "Domestic",
+                                    trip_id %in% in_voyages$trip_id ~ "Inbound",
+                                    trip_id %in% out_voyages$trip_id ~ "Outbound")) %>%
+  group_by(classification, start_iso3, end_iso3) %>%
+  summarize(n_voyages = n_distinct(trip_id),
+            avg_duration_h = mean(voyage_duration_h))
+```
+
+
+```{r}
+# Summarize by start/end - country level only
+freq_voyages_by_iso3_and_year <- dom_voyages %>%
+  mutate(classification = case_when(trip_id %in% domestic_voyages$trip_id ~ "Domestic",
+                                    trip_id %in% in_voyages$trip_id ~ "Inbound",
+                                    trip_id %in% out_voyages$trip_id ~ "Outbound")) %>%
+  group_by(start_year, classification, start_iso3, end_iso3) %>%
   summarize(n_voyages = n_distinct(trip_id),
             avg_duration_h = mean(voyage_duration_h))
 ```
@@ -285,14 +496,14 @@ freq_voyages_by_iso3 <- dom_voyages %>%
 # Plot flow diagram of voyages to Dominica
 links_in <- freq_voyages_by_iso3 %>%
   ungroup() %>%
-  dplyr::filter(start_year == 2022 & start_iso3 != "DMA" & end_iso3 == "DMA") %>%
+  dplyr::filter(start_iso3 != "DMA" & end_iso3 == "DMA") %>%
   dplyr::select(source = start_iso3, target = end_iso3, value = n_voyages)
 links_in$source <- paste(links_in$source, " ", sep="")
 
 # Plot flow diagram of total landings made in each country that go toward each destination
 links_out <- freq_voyages_by_iso3 %>%
   ungroup() %>%
-  dplyr::filter(start_year == 2022 & start_iso3 == "DMA") %>%
+  dplyr::filter(start_iso3 == "DMA") %>%
   dplyr::select(source = start_iso3, target = end_iso3, value = n_voyages)
 
 # Join to previous df
@@ -361,14 +572,14 @@ freq_voyages_by_iso3_and_port <- freq_voyages_by_iso3_and_port %>%
 # Plot flow diagram of voyages to Dominica
 links_in_p <- freq_voyages_by_iso3_and_port %>%
   ungroup() %>%
-  dplyr::filter(start_year == 2022 & end %in% c("Roseau/Pointe Michel", "Saint Joseph/Salisbury", "Portsmouth")) %>%
+  dplyr::filter(end %in% c("Roseau/Pointe Michel", "Saint Joseph/Salisbury", "Portsmouth")) %>%
   dplyr::select(source = start, target = end, value = n_voyages)
 links_in_p$source <- paste(links_in_p$source, " ", sep="")
 
 # Plot flow diagram of total landings made in each country that go toward each destination
 links_out_p <- freq_voyages_by_iso3_and_port %>%
   ungroup() %>%
-  dplyr::filter(start_year == 2022 & start %in% c("Roseau/Pointe Michel", "Saint Joseph/Salisbury", "Portsmouth")) %>%
+  dplyr::filter(start %in% c("Roseau/Pointe Michel", "Saint Joseph/Salisbury", "Portsmouth")) %>%
   dplyr::select(source = start, target = end, value = n_voyages)
 links_out_p$target <- paste(links_out_p$target, "  ", sep="")
 
@@ -399,7 +610,7 @@ sn_p <- sankeyNetwork(Links = links_all_p, Nodes = nodes_p,
               Source = "IDsource", Target = "IDtarget",
               Value = "value", NodeID = "name",
               sinksRight=F, nodeWidth=40, fontSize=13, nodePadding=20,
-              iterations = 100,
+              iterations = 500,
               units = "Voyages",
               NodeGroup ="group",
               colourScale = my_color)
