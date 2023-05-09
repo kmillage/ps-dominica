@@ -26,6 +26,10 @@ plot_bbox <- data.frame("long"=c(-61,-61,-61.8,-61.8,-61),"lat"=c(15.75,15,15,15
   st_as_sf(coords = c("long","lat"), crs = 4326) %>%
   st_transform(crs = st_crs(prj_moll)) %>%
   st_bbox()
+
+# Version name
+#version <- ""
+version <- "v2"
 ```
 
 # Introduction
@@ -68,7 +72,7 @@ ggplot()+
   theme_basic()
 ```
 
-<!-- # Boundaries (Version 1) -->
+<!-- # Boundaries (OLD VERSION) -->
 
 <!-- The first version of creating reserve boundaries is as follows:  -->
 <!-- - The North boundary is defined by a line running perpendicular to shore from a specified coordinate (NE); -->
@@ -290,7 +294,7 @@ ggplot()+
 ## Find SW Corner(s)
 
 ```{r}
-# Get mollewide points of SE coordinate
+# Get points of SE coordinate
 SE_coord <- st_coordinates(SE_sf)
 
 # Create container for NW points
@@ -315,6 +319,10 @@ ggplot()+
 NW_coord <- st_coordinates(NW_sf)
 SW_coord <- st_coordinates(SW_sf)
 
+# Adjust SE corner so it's more inland for making reserve extend all the way to shore
+SE_coord_fix <- SE_coord
+SE_coord_fix[,1] <- -61.348546
+
 # Create reserve polygons
 reserve_sf <- data.frame(scenario = seq(1, nrow(NW_coord)),
                          NW_coord_x = NW_coord[, 1],
@@ -323,7 +331,7 @@ reserve_sf <- data.frame(scenario = seq(1, nrow(NW_coord)),
                          SW_coord_y = SW_coord[,2]) %>%
   rowwise() %>%
   mutate(geom = st_sfc(list(st_polygon(list(matrix(c(NE_coord,
-                                         SE_coord,
+                                         SE_coord_fix,
                                          SW_coord_x, SW_coord_y,
                                          NW_coord_x, NW_coord_y,
                                          NE_coord),
@@ -353,7 +361,7 @@ eez_crop_bbox <- data.frame("long"=c(-61.4,-61.4,-61.8,-61.8,-61.4),"lat"=c(15.6
 eez_buffered <- st_buffer(dominica_eez_sf_moll, -E_distance_from_shore)
 
 # Crop to relevant area
-eez_cropped <- st_crop(eez_buffered, eez_crop_bbox)
+eez_cropped_buffered <- st_crop(eez_buffered, eez_crop_bbox)
 
 # Add corner back in so we don't accidentally crop NW corner
 c = st_polygon(list(matrix(c(-61.6, 15.65, # NE
@@ -371,7 +379,7 @@ c_sf_moll <- data.frame(1) %>%
   st_transform(crs = st_crs(prj_moll))
 
 # Final EEZ crop object 
-eez_cropped_buffered <- st_union(eez_cropped, c_sf_moll)
+eez_cropped_buffered <- st_union(eez_cropped_buffered, c_sf_moll)
 
 # Plot to check
 ggplot()+
@@ -392,6 +400,36 @@ ggplot()+
   geom_sf(data = reserve_sf_revised, aes(group = scenario, fill = scenario), alpha = 0.5)+
   theme_basic()
 ```
+Let's also make a version where the boundaries go all the way to shore for use in our analysis. 
+
+```{r}
+eez_cropped <- st_crop(dominica_eez_sf_moll, eez_crop_bbox)
+
+# Plot to check
+ggplot()+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = eez_cropped, fill = "orange4", size = 0.2)+
+  theme_basic()
+```
+
+```{r}
+# Now interesect that with our reserve boundaries
+reserve_sf_to_shore <- reserve_sf %>%
+  st_transform(crs = st_crs(prj_moll)) %>%
+  st_intersection(eez_cropped) %>%
+  mutate(area_m2 = st_area(geom),
+         area_km2 = as.numeric(area_m2)*1e-6,
+         method = "Version 2 - Coord + Longitude + Shore Buffer",
+         W_lon = W_longitudes) %>%
+  dplyr::select(method, scenario, W_lon, area_km2)
+
+# Plot 
+ggplot()+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = reserve_sf_to_shore, aes(group = scenario, fill = scenario), alpha = 0.5)+
+  theme_basic()
+```
+
 ## Add Shipping Channel
 
 ```{r}
@@ -433,17 +471,133 @@ ggsave(file.path(prj_cachalote_dir, "figures", "potential_reserve_size_from_W_bo
 reserve_size_plot
 ```
 
-
 ```{r}
 #reserve_boundaries_sf_v1 <- reserve_with_sl_sf_moll
 reserve_boundaries_sf <- reserve_with_sl_sf_moll
+reserve_boundaries_to_shore_sf <- reserve_sf_to_shore
 
 # Save
-save(#reserve_boundaries_sf_v1,
-     reserve_boundaries_sf,
+save(reserve_boundaries_sf,
+     reserve_boundaries_to_shore_sf,
      plot_bbox,
      file = file.path(prj_cachalote_dir, "data", "processed", "reserve_boundaries.Rdata"))
 ```
 
+# ------------------------------------------------------------------------------
+
+# Find proportion of ferry AIS positions falling within potential reserve boundaries based on buffer distance from shore
+
+```{r}
+E_distances_to_explore <- c(0, 0.5*nm, 1*nm, 1.5*nm, 2*nm, 2.5*nm, 3*nm)
+
+eez_buffered_object <- NULL
+
+for(i in 1:length(E_distances_to_explore)){
+
+# Buffer EEZ area (negatively)
+eez_buffered_test <- st_buffer(dominica_eez_sf_moll, -E_distances_to_explore[i])
+
+# Crop to relevant area
+eez_cropped_buffered_test <- st_crop(eez_buffered_test, eez_crop_bbox) %>%
+  mutate(E_dist = E_distances_to_explore[i]/nm)
+
+# Add corner back in so we don't accidentally crop NW corner
+eez_cropped_buffered_test <- st_union(eez_cropped_buffered_test, c_sf_moll)
+
+# Add to output object
+eez_buffered_object <- eez_buffered_object %>%
+  bind_rows(eez_cropped_buffered_test)
+}
+
+# Now interesect that with our reserve boundaries
+reserve_sf_buffer_test <- reserve_sf %>%
+  dplyr::filter(scenario == 3) %>%
+  st_transform(crs = st_crs(prj_moll)) %>%
+  st_intersection(eez_buffered_object) %>%
+  dplyr::select(E_dist)
+
+# Plot 
+ggplot()+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = reserve_sf_buffer_test, aes(fill = E_dist), alpha = 0.2, color = NA)+
+  theme_basic()
+```
+
+
+```{r}
+# Load file of ferry positions
+load(file = file.path(prj_cachalote_dir, "data", "processed", "ais", "Dominica_AIS_ferry_only.Rdata"))
+
+# Plot with overlay of potential reserve boundaries
+reserve_plot_w_ferry <- ggplot()+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = ferry_ais_positions, size = 0.2)+
+  geom_sf(data = reserve_with_sl_sf_moll, aes(group = scenario, fill = scenario), alpha = 0.3)+
+  theme_basic()+
+  guides(fill = guide_colorbar(title = "Scenario", title.position = "top"))+
+  coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)
+
+ggsave(file.path(prj_cachalote_dir, "figures", "potential_reserve_boundaries_with_ferry_map.png"), reserve_plot_w_ferry)
+
+reserve_plot_w_ferry
+```
+
+```{r}
+# Get totals by year
+ferry_ais_positions_total <- ferry_ais_positions %>%
+  st_drop_geometry() %>%
+  group_by(year) %>%
+  summarize(n_positions = n(),
+            hours = as.numeric(sum(hours, na.rm = T)))
+
+# Now get number of points in reserve by distance from shore
+ferry_ais_positions_reserve <- ferry_ais_positions %>%
+  st_join(reserve_sf_buffer_test) %>%
+  mutate(id = paste0(mmsi, "_", datetime)) %>%
+  st_drop_geometry() %>%
+  mutate(hours = as.numeric(hours)) %>%
+  dplyr::filter(!is.na(E_dist)) %>%
+  group_by(year, E_dist) %>%
+  summarize(n_positions_in_reserve = n(),
+            hours_in_reserve = sum(hours, na.rm = T))
+
+# Join
+ferry_ais_positions_all <- ferry_ais_positions_total %>%
+  right_join(ferry_ais_positions_reserve, by = "year") %>%
+  mutate(prop_positions_in_reserve = n_positions_in_reserve/n_positions,
+         prop_hours_in_reserve = hours_in_reserve/hours)
+
+# Plot 
+ferry_positions_by_buffer <- ferry_ais_positions_all %>%
+  dplyr::filter(year > 2012) %>%
+  mutate(`Shore buffer` = paste0(E_dist, " nm")) %>%
+  ggplot()+
+  aes(x = fct_rev(`Shore buffer`), y = prop_positions_in_reserve*100)+
+  geom_point()+
+  theme_basic()+
+  labs(y = "% of ferry AIS transmissions within reserve", x = "Shoreline buffer")+
+  facet_wrap(~ year)
+
+ggsave(file.path(prj_cachalote_dir, "figures", "ferry_transmissions_by_shore_buffer.png"), ferry_positions_by_buffer)
+
+ferry_positions_by_buffer
+```
+
+```{r}
+# Plot 
+ferry_hours_by_buffer <- ferry_ais_positions_all %>%
+  dplyr::filter(year > 2012) %>%
+  mutate(`Shore buffer` = paste0(E_dist, " nm")) %>%
+  ggplot()+
+  aes(x = fct_rev(`Shore buffer`), y = prop_hours_in_reserve*100)+
+  geom_point()+
+  theme_basic()+
+  labs(y = "% of ferry hours within reserve", x = "Shoreline buffer")+
+  facet_wrap(~ year)
+
+ggsave(file.path(prj_cachalote_dir, "figures", "ferry_hours_by_shore_buffer.png"), ferry_hours_by_buffer)
+
+ferry_hours_by_buffer
+```
 
 
