@@ -4,191 +4,193 @@ output: html_document
 date: "2023-05-08"
 ---
 
-```{r setup, include=FALSE}
-# Packages
-library(DBI)
-library(bigrquery)
-library(networkD3) # Make flow diagram
-library(webshot) # Save static version of flow diagram
+# NOTE - Not using this approach anymore
 
-# Load common helper script
-source(here::here("common.R"))
+<!-- ```{r setup, include=FALSE} -->
+<!-- # Packages -->
+<!-- library(DBI) -->
+<!-- library(bigrquery) -->
+<!-- library(networkD3) # Make flow diagram -->
+<!-- library(webshot) # Save static version of flow diagram -->
 
-# Load reserve boundaries
-load(here::here("results", "reserve_boundaries.Rdata"))
+<!-- # Load common helper script -->
+<!-- source(here::here("common.R")) -->
 
-# Setup BQ connections
-bq_auth_id <- "kmillage@ucsb.edu"
+<!-- # Load reserve boundaries -->
+<!-- load(here::here("results", "reserve_boundaries.Rdata")) -->
 
-# Bigquery project for billing
-bq_project <-  "emlab-gcp"
+<!-- # Setup BQ connections -->
+<!-- bq_auth_id <- "kmillage@ucsb.edu" -->
 
-# Solution to bigrquery error (August 5, 2020) - see https://github.com/r-dbi/bigrquery/issues/395 for details
-options(scipen = 20)
+<!-- # Bigquery project for billing -->
+<!-- bq_project <-  "emlab-gcp" -->
 
-# Load incoming/outgoing trip data
-dom_voyages <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "dominica_voyages_gfw_2017_2022.csv")) # All voyages - 26,241
-trips_in <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "trips_in_summary_table.csv"))
-trips_out <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "trips_out_summary_table.csv"))
-```
+<!-- # Solution to bigrquery error (August 5, 2020) - see https://github.com/r-dbi/bigrquery/issues/395 for details -->
+<!-- options(scipen = 20) -->
 
-# Link incoming and outgoing voyages
+<!-- # Load incoming/outgoing trip data -->
+<!-- dom_voyages <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "dominica_voyages_gfw_2017_2022.csv")) # All voyages - 26,241 -->
+<!-- trips_in <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "trips_in_summary_table.csv")) -->
+<!-- trips_out <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "trips_out_summary_table.csv")) -->
+<!-- ``` -->
 
-First, let's extract all trips that start and end within Dominica. We'll check to see whether these vessels travel offshore between port visits, and account for their change in travel time differently. 
+<!-- # Link incoming and outgoing voyages -->
 
-This includes both voyages between Dominican ports and voyages where the vessel changed positions within the same anchorage. 
+<!-- First, let's extract all trips that start and end within Dominica. We'll check to see whether these vessels travel offshore between port visits, and account for their change in travel time differently.  -->
 
-```{r}
-# 4,160 voyages
-dom_voyages_within <- dom_voyages %>%
-  dplyr::filter(start_is_DMA & end_is_DMA)
-```
+<!-- This includes both voyages between Dominican ports and voyages where the vessel changed positions within the same anchorage.  -->
 
-Next, let's arrange the remaining voyages by vessel and timestamp and extract info for the next trip chronologically to see if we can match incoming and outgoing trips. 
+<!-- ```{r} -->
+<!-- # 4,160 voyages -->
+<!-- dom_voyages_within <- dom_voyages %>% -->
+<!--   dplyr::filter(start_is_DMA & end_is_DMA) -->
+<!-- ``` -->
 
-```{r}
-# 22,081 voyages
-dom_voyages_keep  <- dom_voyages %>%
-  dplyr::filter(!(trip_id %in% dom_voyages_within$trip_id))
+<!-- Next, let's arrange the remaining voyages by vessel and timestamp and extract info for the next trip chronologically to see if we can match incoming and outgoing trips.  -->
 
-# Arrange all voyages by vessel and timestamp. Extract info for the next trip, chronologically and compare for end/start matches. 
-dom_voyages_matching <- dom_voyages_keep %>%
-  dplyr::select(ssvid, trip_id, start_timestamp, start_anchorage_name, start_iso3, start_is_DMA, end_timestamp, end_anchorage_name, end_iso3, end_is_DMA) %>%
-  arrange(ssvid, start_timestamp) %>%
-  group_by(ssvid) %>%
-  mutate(next_trip_id = lead(trip_id),
-         next_start_anchorage_name = lead(start_anchorage_name),
-         next_start_iso3 = lead(start_iso3),
-         next_start_timestamp = lead(start_timestamp),
-         next_end_is_DMA = lead(end_is_DMA)) %>%
-  ungroup() %>%
-  mutate(same_end_and_start_iso3 = ifelse(end_iso3 == next_start_iso3, T, F),
-         same_end_and_start_anchorage = ifelse(end_anchorage_name == next_start_anchorage_name, T, F))
-```
+<!-- ```{r} -->
+<!-- # 22,081 voyages -->
+<!-- dom_voyages_keep  <- dom_voyages %>% -->
+<!--   dplyr::filter(!(trip_id %in% dom_voyages_within$trip_id)) -->
 
-We want the visit to Dominica to be the midpoint of the round trip, so let's start by getting incoming trips and find their outgoing matches. 
+<!-- # Arrange all voyages by vessel and timestamp. Extract info for the next trip, chronologically and compare for end/start matches.  -->
+<!-- dom_voyages_matching <- dom_voyages_keep %>% -->
+<!--   dplyr::select(ssvid, trip_id, start_timestamp, start_anchorage_name, start_iso3, start_is_DMA, end_timestamp, end_anchorage_name, end_iso3, end_is_DMA) %>% -->
+<!--   arrange(ssvid, start_timestamp) %>% -->
+<!--   group_by(ssvid) %>% -->
+<!--   mutate(next_trip_id = lead(trip_id), -->
+<!--          next_start_anchorage_name = lead(start_anchorage_name), -->
+<!--          next_start_iso3 = lead(start_iso3), -->
+<!--          next_start_timestamp = lead(start_timestamp), -->
+<!--          next_end_is_DMA = lead(end_is_DMA)) %>% -->
+<!--   ungroup() %>% -->
+<!--   mutate(same_end_and_start_iso3 = ifelse(end_iso3 == next_start_iso3, T, F), -->
+<!--          same_end_and_start_anchorage = ifelse(end_anchorage_name == next_start_anchorage_name, T, F)) -->
+<!-- ``` -->
 
-Which voyages match by anchorage? 
+<!-- We want the visit to Dominica to be the midpoint of the round trip, so let's start by getting incoming trips and find their outgoing matches.  -->
 
-```{r}
-# Find the incoming trips with an exact outgoing match (the next trip departs from the same port) 
-dom_voyages_match_anchorage <- dom_voyages_matching %>%
-  dplyr::filter(!start_is_DMA) %>%
-  dplyr::filter(same_end_and_start_iso3 & same_end_and_start_anchorage)
+<!-- Which voyages match by anchorage?  -->
 
-# Reformat
-voyages_in_out_lookup <- dom_voyages_match_anchorage %>%
-  dplyr::select(ssvid, trip_id_in = trip_id, trip_id_out = next_trip_id) %>%
-  distinct(ssvid, trip_id_in, trip_id_out)
+<!-- ```{r} -->
+<!-- # Find the incoming trips with an exact outgoing match (the next trip departs from the same port)  -->
+<!-- dom_voyages_match_anchorage <- dom_voyages_matching %>% -->
+<!--   dplyr::filter(!start_is_DMA) %>% -->
+<!--   dplyr::filter(same_end_and_start_iso3 & same_end_and_start_anchorage) -->
 
-# Total trips accounted for - 13,938
-trips_accounted_for <- unique(c(voyages_in_out_lookup$trip_id_in, voyages_in_out_lookup$trip_id_out))
-```
+<!-- # Reformat -->
+<!-- voyages_in_out_lookup <- dom_voyages_match_anchorage %>% -->
+<!--   dplyr::select(ssvid, trip_id_in = trip_id, trip_id_out = next_trip_id) %>% -->
+<!--   distinct(ssvid, trip_id_in, trip_id_out) -->
 
-Which voyages match by country, but not anchorage? 
+<!-- # Total trips accounted for - 13,938 -->
+<!-- trips_accounted_for <- unique(c(voyages_in_out_lookup$trip_id_in, voyages_in_out_lookup$trip_id_out)) -->
+<!-- ``` -->
 
-```{r}
-# Find those with a close outgoing match (the next trip departs from the same country)
-dom_voyages_match_iso3 <- dom_voyages_matching %>%
-  dplyr::filter(!start_is_DMA) %>%
-  dplyr::filter(same_end_and_start_iso3 & !same_end_and_start_anchorage)
+<!-- Which voyages match by country, but not anchorage?  -->
 
-# Reformat
-voyages_to_add <- dom_voyages_match_iso3 %>%
-  dplyr::select(ssvid, trip_id_in = trip_id, trip_id_out = next_trip_id) %>%
-  distinct(ssvid, trip_id_in, trip_id_out)
+<!-- ```{r} -->
+<!-- # Find those with a close outgoing match (the next trip departs from the same country) -->
+<!-- dom_voyages_match_iso3 <- dom_voyages_matching %>% -->
+<!--   dplyr::filter(!start_is_DMA) %>% -->
+<!--   dplyr::filter(same_end_and_start_iso3 & !same_end_and_start_anchorage) -->
 
-# Total trips accounted for - 7,032
-trips_accounted_for2 <- unique(c(voyages_to_add$trip_id_in, voyages_to_add$trip_id_out))
-```
+<!-- # Reformat -->
+<!-- voyages_to_add <- dom_voyages_match_iso3 %>% -->
+<!--   dplyr::select(ssvid, trip_id_in = trip_id, trip_id_out = next_trip_id) %>% -->
+<!--   distinct(ssvid, trip_id_in, trip_id_out) -->
 
-```{r}
-# All trips accounted for
-trips_accounted_for_all <- c(trips_accounted_for, trips_accounted_for2)
-```
+<!-- # Total trips accounted for - 7,032 -->
+<!-- trips_accounted_for2 <- unique(c(voyages_to_add$trip_id_in, voyages_to_add$trip_id_out)) -->
+<!-- ``` -->
 
-Now let's see what we missed... We'll just treat these as one-way trips for now
+<!-- ```{r} -->
+<!-- # All trips accounted for -->
+<!-- trips_accounted_for_all <- c(trips_accounted_for, trips_accounted_for2) -->
+<!-- ``` -->
 
-```{r}
-# Find non-matched trips - 1,111
-dom_voyages_not_matched <- dom_voyages_matching %>%
-  dplyr::filter(!(trip_id %in% trips_accounted_for_all))
-```
+<!-- Now let's see what we missed... We'll just treat these as one-way trips for now -->
 
-# Identify some test segments to pull raw positions from
+<!-- ```{r} -->
+<!-- # Find non-matched trips - 1,111 -->
+<!-- dom_voyages_not_matched <- dom_voyages_matching %>% -->
+<!--   dplyr::filter(!(trip_id %in% trips_accounted_for_all)) -->
+<!-- ``` -->
 
-## Leaving Dominica
+<!-- # Identify some test segments to pull raw positions from -->
 
-```{r}
-# Trip goes from DMA-4 in DMA to Bolands in ATG (21 hour trip)
-trip_id_1 <- "205509630-0170f97d7650"
+<!-- ## Leaving Dominica -->
 
-# Trip goes from Portsmouth to St. Kitts in MSR (7.8 hour trip)
-trip_id_2 <- "205857030-016a316ed420"
+<!-- ```{r} -->
+<!-- # Trip goes from DMA-4 in DMA to Bolands in ATG (21 hour trip) -->
+<!-- trip_id_1 <- "205509630-0170f97d7650" -->
 
-# Trip goes from Roseau to Boca Chica in DOM (66 hour trip)
-trip_id_3 <- "209534000-0168ca209700"
+<!-- # Trip goes from Portsmouth to St. Kitts in MSR (7.8 hour trip) -->
+<!-- trip_id_2 <- "205857030-016a316ed420" -->
 
-# Combine into vec
-trip_ids_keep <- paste0("'", paste0(c(trip_id_1, trip_id_2, trip_id_3), collapse = "','"), "'")
+<!-- # Trip goes from Roseau to Boca Chica in DOM (66 hour trip) -->
+<!-- trip_id_3 <- "209534000-0168ca209700" -->
 
-# SQL to pull all positions from these tracks
-trip_pull_sql <- paste0("WITH
-  positions_keep AS (
-    SELECT
-      *
-    FROM
-      `emlab-gcp.dominica.all_positions_matched_to_reserve_2017_2022`
-    WHERE
-      trip_id IN (", trip_ids_keep, ")
-  )
+<!-- # Combine into vec -->
+<!-- trip_ids_keep <- paste0("'", paste0(c(trip_id_1, trip_id_2, trip_id_3), collapse = "','"), "'") -->
 
-SELECT
-  *
-FROM
-  positions_keep
-ORDER BY
-  timestamp,
-  scenario")
-```
+<!-- # SQL to pull all positions from these tracks -->
+<!-- trip_pull_sql <- paste0("WITH -->
+<!--   positions_keep AS ( -->
+<!--     SELECT -->
+<!--       * -->
+<!--     FROM -->
+<!--       `emlab-gcp.dominica.all_positions_matched_to_reserve_2017_2022` -->
+<!--     WHERE -->
+<!--       trip_id IN (", trip_ids_keep, ") -->
+<!--   ) -->
 
-```{r}
-# Table to save output
-tracks_demo_table <- bq_table(project = bq_project,
-                              table = "demo_tracks_table",
-                              dataset = "dominica")
+<!-- SELECT -->
+<!--   * -->
+<!-- FROM -->
+<!--   positions_keep -->
+<!-- ORDER BY -->
+<!--   timestamp, -->
+<!--   scenario") -->
+<!-- ``` -->
 
-if(bq_table_exists(tracks_demo_table)){
-  bq_table_delete(tracks_demo_table)
-}else{
-  bq_table_create(tracks_demo_table)
-}
+<!-- ```{r} -->
+<!-- # Table to save output -->
+<!-- tracks_demo_table <- bq_table(project = bq_project, -->
+<!--                               table = "demo_tracks_table", -->
+<!--                               dataset = "dominica") -->
 
-# Run query
-demo_tracks <- bq_project_query(bq_project,
-                 query = trip_pull_sql,
-                 destination_table = tracks_demo_table,
-                 use_legacy_sql = FALSE,
-                 allowLargeResults = TRUE) %>%
-  bq_table_download()
-```
+<!-- if(bq_table_exists(tracks_demo_table)){ -->
+<!--   bq_table_delete(tracks_demo_table) -->
+<!-- }else{ -->
+<!--   bq_table_create(tracks_demo_table) -->
+<!-- } -->
 
-```{r}
-demo_tracks_sf <- demo_tracks %>%
-  st_as_sf(coords = c("lon", "lat"),
-           crs = 4326) %>%
-  st_transform(crs = prj_moll) %>%
-  dplyr::filter(scenario %in% c(NA, 3))
+<!-- # Run query -->
+<!-- demo_tracks <- bq_project_query(bq_project, -->
+<!--                  query = trip_pull_sql, -->
+<!--                  destination_table = tracks_demo_table, -->
+<!--                  use_legacy_sql = FALSE, -->
+<!--                  allowLargeResults = TRUE) %>% -->
+<!--   bq_table_download() -->
+<!-- ``` -->
 
-demo_tracks_plot <- ggplot()+
-  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
-  geom_sf(data = demo_tracks_sf, aes(color = start_anchorage_name), size = 1)+
-  geom_sf(data = reserve_boundaries_sf, aes(fill = scenario), alpha = 0.3)+
-  map_layer_moll+
-  coord_sf(xlim = plot_bbox$xlim+c(plot_bbox$xlim[1]*0.04, -plot_bbox$xlim[2]*0.04), 
-           ylim = plot_bbox$ylim+c(-plot_bbox$ylim[1]*0.04, plot_bbox$ylim[2]*0.04))+
-  theme_basic()+
-  guides(fill = "none")
+<!-- ```{r} -->
+<!-- demo_tracks_sf <- demo_tracks %>% -->
+<!--   st_as_sf(coords = c("lon", "lat"), -->
+<!--            crs = 4326) %>% -->
+<!--   st_transform(crs = prj_moll) %>% -->
+<!--   dplyr::filter(scenario %in% c(NA, 3)) -->
 
-demo_tracks_plot
-```
+<!-- demo_tracks_plot <- ggplot()+ -->
+<!--   geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+ -->
+<!--   geom_sf(data = demo_tracks_sf, aes(color = start_anchorage_name), size = 1)+ -->
+<!--   geom_sf(data = reserve_boundaries_sf, aes(fill = scenario), alpha = 0.3)+ -->
+<!--   map_layer_moll+ -->
+<!--   coord_sf(xlim = plot_bbox$xlim+c(plot_bbox$xlim[1]*0.04, -plot_bbox$xlim[2]*0.04),  -->
+<!--            ylim = plot_bbox$ylim+c(-plot_bbox$ylim[1]*0.04, plot_bbox$ylim[2]*0.04))+ -->
+<!--   theme_basic()+ -->
+<!--   guides(fill = "none") -->
+
+<!-- demo_tracks_plot -->
+<!-- ``` -->

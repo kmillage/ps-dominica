@@ -16,7 +16,7 @@ source(here::here("common.R"))
 load(here::here("results", "reserve_boundaries.Rdata"))
 
 # Load voyage data we need
-dom_voyages <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "dominica_voyages_gfw_2017_2022.csv")) # All voyages - 26,241
+dom_voyages <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "dominica_voyages_gfw_2017_2022.csv")) # All voyages - 23,983
 trips_in <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "trips_in_summary_table_v2.csv"))
 trips_out <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "trips_out_summary_table_v2.csv"))
 
@@ -44,6 +44,12 @@ abs(length(inbound_voyages_pos) - length(inbound_voyages_all))
 inbound_voyages_nas <- trips_in %>% dplyr::filter(is.na(lat_start) | is.na(lon_start) | is.na(lat_end) | is.na(lon_end)) %>%
   distinct(trip_id) %>% pull()
 
+# Good inbound trips
+inbound_voyages_good <- trips_in %>% 
+  dplyr::filter(!is.na(lat_start) & !is.na(lon_start) & !is.na(lat_end) & !is.na(lon_end)) %>%
+  dplyr::filter(!is.na(scenario)) %>%
+  distinct(trip_id) %>% pull()
+
 # Determine the proportion of trips that would be affected by each reserve scenario
 inbound_prop_affected <- trips_in %>%
   dplyr::filter(trip_id %in% inbound_voyages_good) %>%
@@ -54,12 +60,6 @@ inbound_prop_affected <- trips_in %>%
   gather()
 
 head(inbound_prop_affected)
-
-# Good inbound trips
-inbound_voyages_good <- trips_in %>% 
-  dplyr::filter(!is.na(lat_start) & !is.na(lon_start) & !is.na(lat_end) & !is.na(lon_end)) %>%
-  dplyr::filter(!is.na(scenario)) %>%
-  distinct(trip_id) %>% pull()
 ```
 
 ## Outbound voyages
@@ -76,6 +76,12 @@ abs(length(outbound_voyages_pos) - length(outbound_voyages_all))
 outbound_voyages_nas <- trips_out %>% dplyr::filter(is.na(lat_start) | is.na(lon_start) | is.na(lat_end) | is.na(lon_end)) %>%
   distinct(trip_id) %>% pull()
 
+# Good outbound trips
+outbound_voyages_good <- trips_out %>% 
+  dplyr::filter(!is.na(lat_start) & !is.na(lon_start) & !is.na(lat_end) & !is.na(lon_end)) %>%
+  dplyr::filter(!is.na(scenario)) %>%
+  distinct(trip_id) %>% pull()
+
 # Determine the proportion of trips that would be affected by each reserve scenario
 outbound_prop_affected <- trips_out %>%
   dplyr::filter(trip_id %in% outbound_voyages_good) %>%
@@ -86,12 +92,6 @@ outbound_prop_affected <- trips_out %>%
   gather()
 
 head(outbound_prop_affected)
-
-# Good outbound trips
-outbound_voyages_good <- trips_out %>% 
-  dplyr::filter(!is.na(lat_start) & !is.na(lon_start) & !is.na(lat_end) & !is.na(lon_end)) %>%
-  dplyr::filter(!is.na(scenario)) %>%
-  distinct(trip_id) %>% pull()
 ```
 
 # Distance of start/end positions to anchorage coordinates and grouped centroids
@@ -184,4 +184,23 @@ good_trips <- c(inbound_voyages_good[!inbound_voyages_good %in% bad_trips_in],
 save(good_trips,
      file = file.path(prj_cachalote_dir, "data", "processed", "good_trips.Rdata"))
 ```
+
+# Vessels with a matching category
+
+```{r}
+trips_in_category <- trips_in %>%
+  dplyr::filter(trip_id %in% good_trips) %>%
+  distinct(trip_id, category) %>%
+  group_by(category) %>%
+  summarize(n = n()) %>%
+  mutate(prop = (n/trips_remaining_in)*100)
+
+trips_out_category <- trips_out %>%
+  dplyr::filter(trip_id %in% good_trips) %>%
+  distinct(trip_id, category) %>%
+  group_by(category) %>%
+  summarize(n = n()) %>%
+  mutate(prop = (n/trips_remaining_out)*100)
+```
+
 
