@@ -19,10 +19,6 @@ plot_bbox <- data.frame("long"=c(-61,-61,-61.8,-61.8,-61),"lat"=c(15.75,15,15,15
   st_as_sf(coords = c("long","lat"), crs = 4326) %>%
   st_transform(crs = st_crs(prj_moll)) %>%
   st_bbox()
-
-# Version name
-#version <- ""
-version <- "v2"
 ```
 
 # Introduction
@@ -291,6 +287,50 @@ ggplot()+
   theme_basic()
 ```
 
+### Create polygon of coastal buffer zone
+
+```{r}
+b1 <- reserve_sf_to_shore %>% dplyr::filter(scenario == 3)
+b2 <- reserve_sf_revised %>% dplyr::filter(scenario == 3)
+
+buffer_zone_sf <- st_difference(b1, b2) %>%
+  mutate(name = "Buffer zone - 2nm") %>%
+  dplyr::select(name)
+
+# Plot 
+ggplot()+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = buffer_zone_sf, alpha = 0.5)+
+  theme_basic()
+```
+
+### Create polygons of actual shipping zone area for each scenario
+
+```{r}
+# Subtract shipping channel and summarize
+shipping_lane_sf <- st_intersection(reserve_sf_revised, sl_sf_moll) %>%
+  mutate(name = paste0("Shipping lane - scenario ", scenario)) %>%
+  dplyr::select(name)
+
+# Plot 
+ggplot()+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = shipping_lane_sf, aes(group = name, fill = name), alpha = 0.5)+
+  theme_basic()
+```
+
+And save these for use in our whales analysis and in diagnostics
+
+```{r}
+other_areas_sf <- buffer_zone_sf %>%
+  bind_rows(shipping_lane_sf)
+
+# Save
+save(other_areas_sf,
+     file = file.path(prj_cachalote_dir, "data", "processed", "buffer_and_shipping_lane_boundaries.Rdata"))
+```
+
+
 ## Add Shipping Channel
 
 ```{r}
@@ -361,6 +401,50 @@ save(reserve_boundaries_sf,
      plot_bbox,
      file = file.path(prj_cachalote_dir, "data", "processed", "reserve_boundaries.Rdata"))
 ```
+
+# ------------------------------------------------------------------------------
+
+# Create polygon of Dominica
+
+```{r}
+# Create bounding box of 
+d = st_polygon(list(matrix(c(-61.2, 15.65, # NE
+                             -61.2, 15.19, # SE
+                             -61.5, 15.19, # SW
+                             -61.5, 15.65, # NW,
+                             -61.2, 15.65), # NE
+                             ncol = 2, byrow = T))) 
+  
+# Create simple feature
+d_sf_moll <- data.frame(1) %>%
+  mutate(geom = st_sfc(d)) %>%
+  st_as_sf() %>%
+  st_set_crs(st_crs(prj_latlon)) %>%
+  st_transform(crs = st_crs(prj_moll))
+
+# Plot to check
+ggplot()+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = d_sf_moll, fill = "orange4", size = 0.2)+
+  theme_basic()
+```
+
+```{r}
+# Get difference for plotting
+dominica_sf_moll <- st_difference(d_sf_moll, dominica_eez_sf_moll) %>%
+  mutate(name = "Dominica") %>%
+  dplyr::select(name)
+
+# Plot to check
+ggplot()+
+  geom_sf(data = dominica_sf_moll, fill = "orange4", size = 0.2)+
+  theme_basic()
+
+# Save
+save(dominica_sf_moll,
+     file = file.path(prj_cachalote_dir, "data", "processed", "dominica_boundaries.Rdata"))
+```
+
 
 # ------------------------------------------------------------------------------
 
@@ -505,148 +589,3 @@ ggsave(file.path(prj_cachalote_dir, "figures", "ferry_plots_combined.png"), ferr
 
 ferry_plot_out
 ```
-
-<!-- # Boundaries (OLD VERSION) -->
-
-<!-- The first version of creating reserve boundaries is as follows:  -->
-<!-- - The North boundary is defined by a line running perpendicular to shore from a specified coordinate (NE); -->
-<!-- - The South boundary is defined by a line running perpendicular to shore from a specified coordinate (SE); -->
-<!-- - The NW and SW corners of the reserve are variable and determined by specified distances from their Eastern counterparts. The West boundary is then defined by a straight line connecting those two points.  -->
-<!-- - The East boundary is defined by a straight line connecting the NE and SE corners of the reserve, UNLESS any area of the reserve comes within 2 nm from shore at which point a buffer is carved out and the East boundary is determined by that buffer from shore.  -->
-
-<!-- ```{r} -->
-<!-- # Version 1 Inputs (lon/lat) -->
-<!-- NE_coordinates <- c(-61.540650, 15.63) -->
-<!-- SE_coordinates <- c(-61.384571, 15.190341) -->
-
-<!-- ## Distances of the NW and SW corners of the reserve measured from the specified NE and SE coordinates.  -->
-<!-- W_distances_top <- c(3*nm, 5*nm, 7*nm) # 3,5,7  nautical miles -->
-<!-- W_distances_bottom <- c(6*nm, 8*nm, 10*nm)  # 6,8,10 nautical miles -->
-
-<!-- ## Distance from shore -->
-<!-- E_distance_from_shore <- 1.5*nm -->
-<!-- ``` -->
-
-<!-- ## Set NE Corner -->
-
-<!-- ```{r} -->
-<!-- # Set NE boundary. Starting coordinates eyeballed from map Enric sent.   -->
-<!-- NE_sf_moll <- data.frame(loc = "NE") %>% -->
-<!--   mutate(geom = st_sfc(st_point(NE_coordinates))) %>% -->
-<!--   st_as_sf() %>% -->
-<!--   st_set_crs(st_crs(prj_latlon)) %>% -->
-<!--   st_transform(crs = st_crs(prj_moll)) # convert to Mollewide -->
-
-<!-- # Plot  -->
-<!-- ggplot()+ -->
-<!--   geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+ -->
-<!--   geom_sf(data = NE_sf_moll) -->
-<!-- ``` -->
-
-<!-- ## Find NW Corner(s)  -->
-
-<!-- ```{r} -->
-<!-- # Get mollewide points of NE coordinate -->
-<!-- NE_coord_moll <- st_coordinates(NE_sf_moll) -->
-
-<!-- # Create container for NW points -->
-<!-- NW_sf_moll <- data.frame(loc = paste0("NW_", W_distances_top/nm, "nm"), -->
-<!--                          dist = W_distances_top) %>% -->
-<!--   rowwise() %>% -->
-<!--   mutate(geom = st_sfc(st_point(c(NE_coord_moll[1]-dist, NE_coord_moll[2])))) %>% -->
-<!--   st_as_sf() %>% -->
-<!--   st_set_crs(prj_moll) -->
-
-<!-- # Plot  -->
-<!-- ggplot()+ -->
-<!--   geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+ -->
-<!--   geom_sf(data = NW_sf_moll, aes(group = loc)) -->
-<!-- ``` -->
-
-<!-- # Set SE Corner -->
-
-<!-- ```{r} -->
-<!-- # Set SE boundary. Coordinates eyeballed from map Enric sent.   -->
-<!-- SE_sf_moll <- data.frame(loc = "SE") %>% -->
-<!--   mutate(geom = st_sfc(st_point(SE_coordinates))) %>% -->
-<!--   st_as_sf() %>% -->
-<!--   st_set_crs(st_crs(prj_latlon)) %>% -->
-<!--   st_transform(crs = st_crs(prj_moll)) # convert to Mollewide -->
-
-<!-- # Plot  -->
-<!-- ggplot()+ -->
-<!--   geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+ -->
-<!--   geom_sf(data = SE_sf_moll) -->
-<!-- ``` -->
-
-<!-- ## Find SW Corner(s) -->
-
-<!-- ```{r} -->
-<!-- # Get mollewide points of SE coordinate -->
-<!-- SE_coord_moll <- st_coordinates(SE_sf_moll) -->
-
-<!-- # Create container for NW points -->
-<!-- SW_sf_moll <- data.frame(loc = paste0("SW_", W_distances_bottom/nm, "nm"), -->
-<!--                          dist = W_distances_bottom) %>% -->
-<!--   rowwise() %>% -->
-<!--   mutate(geom = st_sfc(st_point(c(SE_coord_moll[1]-dist, SE_coord_moll[2])))) %>% -->
-<!--   st_as_sf() %>% -->
-<!--   st_set_crs(prj_moll) -->
-
-<!-- # Plot  -->
-<!-- ggplot()+ -->
-<!--   geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+ -->
-<!--   geom_sf(data = SW_sf_moll, aes(group = loc)) -->
-<!-- ``` -->
-
-<!-- ## Combine to Form Boundaries -->
-
-<!-- ```{r} -->
-<!-- # Get corner coordinates  -->
-<!-- NW_coord_moll <- st_coordinates(NW_sf_moll) -->
-<!-- SW_coord_moll <- st_coordinates(SW_sf_moll) -->
-
-<!-- # Create reserve polygons -->
-<!-- reserve_sf_moll <- data.frame(scenario = seq(1, nrow(NW_coord_moll)), -->
-<!--                               NW_coord_moll_x = NW_coord_moll[,1], -->
-<!--                               NW_coord_moll_y = NW_coord_moll[,2], -->
-<!--                               SW_coord_moll_x = SW_coord_moll[,1], -->
-<!--                               SW_coord_moll_y = SW_coord_moll[,2]) %>% -->
-<!--   rowwise() %>% -->
-<!--   mutate(geom = st_sfc(list(st_polygon(list(matrix(c(NE_coord_moll, -->
-<!--                                          SE_coord_moll, -->
-<!--                                          SW_coord_moll_x, SW_coord_moll_y, -->
-<!--                                          NW_coord_moll_x, NW_coord_moll_y, -->
-<!--                                          NE_coord_moll), -->
-<!--                                        ncol = 2, byrow = T)))))) %>% -->
-<!--   st_as_sf() %>% -->
-<!--   st_set_crs(prj_moll) -->
-
-<!-- # Plot  -->
-<!-- ggplot()+ -->
-<!--   geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightblue4", size = 0.2)+ -->
-<!--   geom_sf(data = reserve_sf_moll, aes(group = scenario, fill = scenario), alpha = 0.5) -->
-<!-- ``` -->
-<!-- ## Add Shipping Channel  -->
-
-<!-- We also need to incorporate a shipping channel bisecting the reserve that is 5 miles wild and directly perpendicular to Roseau.  -->
-
-<!-- ```{r} -->
-<!-- # Subtract shipping channel and summarize -->
-<!-- reserve_with_sl_sf_moll <- st_difference(reserve_sf_moll, sl_sf_moll) %>% -->
-<!--   mutate(area_m2 = st_area(geom), -->
-<!--          area_km2 = as.numeric(area_m2)*1e-6, -->
-<!--          method = "Version 1 - Coord + Distance", -->
-<!--          NW_dist = paste0(W_distances_top/nm, "nm"), -->
-<!--          SW_dist = paste0(W_distances_bottom/nm, "nm")) %>% -->
-<!--   dplyr::select(method, scenario, NW_dist, SW_dist, area_km2) -->
-
-<!-- # Plot  -->
-<!-- ggplot()+ -->
-<!--   geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "lightgrey", size = 0.2)+ -->
-<!--   geom_sf(data = reserve_with_sl_sf_moll, aes(group = scenario, fill = scenario), alpha = 0.3)+ -->
-<!--   geom_sf(data = NE_sf_moll, size = 0.8)+ -->
-<!--   geom_sf(data = SE_sf_moll, size = 0.8)+ -->
-<!--   theme_basic()+ -->
-<!--   guides(fill = guide_colorbar(title = "Scenario", title.position = "top"))+ -->
-<!--   coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim) -->

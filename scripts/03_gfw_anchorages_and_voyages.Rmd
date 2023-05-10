@@ -15,7 +15,10 @@ library(webshot) # Save static version of flow diagram
 source(here::here("common.R"))
 
 # Load reserve boundaries
-load(here::here("results", "reserve_boundaries.Rdata"))
+load(file.path(prj_cachalote_dir, "data", "processed", "reserve_boundaries.Rdata"))
+
+# Load Dominica boundaries
+load(file.path(prj_cachalote_dir, "data", "processed", "dominica_boundaries.Rdata"))
 ```
 
 # Introduction
@@ -67,28 +70,39 @@ dom_ports <- bq_project_query(bq_project,
                               allowLargeResults = TRUE) %>%
   bq_table_download()
 
-# Save locally too
-write_csv(dom_ports, file.path(prj_cachalote_dir, "data", "processed", "dominica_anchorages_gfw.csv"))
+
 ```
 
 ```{r}
+# Make a couple of small name adjustments
+dom_ports_out <- dom_ports %>%
+  mutate(anchorage_name_revised = ifelse(anchorage_name == "DMA-4", anchorage_sublabel, anchorage_name),
+         port_group = case_when(anchorage_name == "PORTSMOUTH" ~ "Portsmouth",
+                                anchorage_name %in% c("ROSEAU", "POINTE MICHEL") ~ "Roseau/Pointe Michel",
+                                anchorage_name %in% c("DMA-4", "SAINT JOSEPH") ~ "Salisbury/Saint Joseph"))
+
+# Save locally too
+write_csv(dom_ports_out, file.path(prj_cachalote_dir, "data", "processed", "dominica_anchorages_gfw.csv"))
+```
+
+
+```{r}
 # Make ports spatial
-dom_ports_sf <- dom_ports %>%
+dom_ports_sf <- dom_ports_out %>%
   st_as_sf(coords = c("lon", "lat"),
            crs = 4326,
            remove = F) %>%
-  sf::st_transform(crs = st_crs(prj_moll)) # convert points to Mollewide
+  sf::st_transform(crs = st_crs(prj_moll))  # convert points to Mollewide
 
 # Plot 
 anchorages_plot <- ggplot()+
-  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
-  geom_sf(data = reserve_boundaries_sf, aes(fill = scenario), alpha = 0.4)+
-  geom_sf(data = dom_ports_sf, aes(size = total_visits, color = anchorage_name), alpha = 0.3)+
+  geom_sf(data = dominica_sf_moll, color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = reserve_boundaries_sf, aes(fill = fct_rev(as.factor(scenario))), alpha = 1, color = NA)+
+  geom_sf(data = dom_ports_sf, aes(color = anchorage_name_revised), alpha = 1, size = 0.5)+
   coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)+
   theme_basic()+
   guides(color = guide_legend(title = "Name", nrow = 3),
-         fill = "none",
-         size = guide_legend(title = "Total visits"))+
+         fill = "none")+
   labs(title = "Named anchorages in Dominica identified by GFW")
 
 ggsave(file.path(prj_cachalote_dir, "figures", "dominica_anchorages.png"), anchorages_plot, height = 8, width = 8)
@@ -99,9 +113,6 @@ anchorages_plot
 ```{r}
 # Now calculate centroid by group
 dom_ports_centroid_sf <- dom_ports_sf %>%
-  mutate(port_group = case_when(anchorage_name == "PORTSMOUTH" ~ "Portsmouth",
-                                anchorage_name %in% c("ROSEAU", "POINTE MICHEL") ~ "Roseau/Pointe Michel",
-                                anchorage_name %in% c("DMA-4", "SAINT JOSEPH") ~ "Saint Joseph/Salisbury")) %>%
   group_by(port_group) %>%
   mutate(lat_cen = mean(lat),
          lon_cen = mean(lon)) %>%
@@ -114,9 +125,9 @@ dom_ports_centroid_sf <- dom_ports_sf %>%
 
 # Plot 
 anchorage_centroid_plot <- ggplot()+
-  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
-  geom_sf(data = reserve_boundaries_sf, aes(fill = scenario), alpha = 0.3)+
-  geom_sf(data = dom_ports_centroid_sf, aes(color = port_group))+
+  geom_sf(data = dominica_sf_moll, color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = reserve_boundaries_sf, aes(fill = fct_rev(as.factor(scenario))), alpha = 1, color = NA)+
+  geom_sf(data = dom_ports_centroid_sf, aes(shape = port_group))+
   coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)+
   theme_basic()+
   guides(color = guide_legend(title = "Anchorage group", nrow = 3),
@@ -244,7 +255,7 @@ sql_dom_voyages <- "WITH
 ```{r query-voyages, eval=F}
 # Table to save output
 voyage_table <- bq_table(project = bq_project,
-                         table = "dominica_voyages_2017_2022",
+                         table = "dominica_voyages_2017_2022_raw",
                          dataset = "dominica")
 
 if(bq_table_exists(voyage_table)){
@@ -262,61 +273,12 @@ dom_voyages <- bq_project_query(bq_project,
   bq_table_download()
 
 # Save locally too
-write_csv(dom_voyages, file.path(prj_cachalote_dir, "data", "processed", "dominica_voyages_gfw_2017_2022.csv"))
+write_csv(dom_voyages, file.path(prj_cachalote_dir, "data", "processed", "dominica_voyages_gfw_2017_2022_raw.csv"))
 ```
 
-# Summarize
+# Start/end anchorages outside of Dominica
 
-First, lets figure out how many inbound, outgoing, and domestic voyages we have between 2017 and 2022. Then let's make sure we don't have any voyages that don't meet one of these three classifications.  
-
-```{r}
-# 2,068 domestic voyages (starting and ending in Dominica)
-domestic_voyages <- dom_voyages %>%
-  dplyr::filter(start_is_DMA & end_is_DMA) %>%
-  distinct(trip_id)
-
-# 10,837 inbound voyages
-in_voyages <- dom_voyages %>%
-  dplyr::filter(!start_is_DMA & end_is_DMA) %>%
-  distinct(trip_id)
-
-# 11,078 outgoing voyages
-out_voyages <- dom_voyages %>%
-  dplyr::filter(start_is_DMA & !end_is_DMA) %>%
-  distinct(trip_id)
-
-# 23,983 total voyages
-all_voyages <- c(domestic_voyages$trip_id, in_voyages$trip_id, out_voyages$trip_id)
-
-# Are we missing any? No. 
-other_voyages <- dom_voyages %>%
-  dplyr::filter(!(trip_id %in% all_voyages)) %>%
-  distinct(trip_id)
-
-# Do we have duplicate rows in our voyage table? No. 
-n_rows_per_trip <- dom_voyages %>%
-  group_by(trip_id, ssvid) %>%
-  summarize(n_rows = n()) %>%
-  dplyr::filter(n_rows > 1)
-```
-
-```{r}
-# Let's do some simple classifications for our voyages: 
-voyage_classification <- dom_voyages %>%
-  mutate(classification = case_when(trip_id %in% domestic_voyages$trip_id ~ "Domestic",
-                                    trip_id %in% in_voyages$trip_id ~ "Inbound",
-                                    trip_id %in% out_voyages$trip_id ~ "Outbound")) %>%
-  group_by(classification) %>%
-  summarize(n_voyages = n(),
-            average_duration = mean(voyage_duration_h),
-            total_duration = sum(voyage_duration_h),
-            min_duration = min(voyage_duration_h),
-            max_duration = max(voyage_duration_h))
-
-head(voyage_classification)
-```
-
-## Get maps of start/end anchorages outside of Dominica
+During the process of getting our preliminary results, we determined that some of the ISO 3 codes associated with start/end ports may be wrong. Therefore, let's look more closely at these other ports and correct where necessary. 
 
 ```{r}
 other_anchorage_sql <- 'WITH
@@ -375,7 +337,7 @@ other_anchorage_sql <- 'WITH
 ```{r query-voyages, eval=F}
 # Table to save output
 other_anchorage_table <- bq_table(project = bq_project,
-                            table = "all_relevant_ports",
+                            table = "origin_and_destination_ports",
                             dataset = "dominica")
 
 if(bq_table_exists(other_anchorage_table)){
@@ -392,8 +354,10 @@ other_ports <- bq_project_query(bq_project,
                                 allowLargeResults = TRUE) %>%
   bq_table_download()
 ```
+Classify by origin or destination port (or both).
 
 ```{r}
+# Classify
 other_ports_sf <- other_ports %>%
   group_by(anchorage_id) %>%
   mutate(category = case_when(length(type) == 2 ~ "Both",
@@ -408,10 +372,7 @@ other_ports_sf <- other_ports %>%
 
 # Plot 
 other_port_plot <- ggplot()+
-  #geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
-  #geom_sf(data = reserve_boundaries_sf, aes(fill = scenario), alpha = 0.3)+
   geom_sf(data = other_ports_sf, aes(color = category), size = 0.5)+
-  #coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)+
   theme_basic()+
   map_layer_moll+
   guides(color = guide_legend(title = "Anchorage group", nrow = 3),
@@ -423,12 +384,13 @@ ggsave(file.path(prj_cachalote_dir, "figures", "dominica_start_and_end_ports.png
 other_port_plot
 ```
 
-### Correct mislabeled port ISO3 codes
+## Correct mislabeled ISO 3 codes
 
 We've noticed that the distances traveled for certain start/end ports based on ISO 3 code don't seem right. Particularly the following: 
 - FRA
+- NLD
 
-Let's look closer at these and relabel them if necessary
+Let's look more closely at these and relabel them if necessary. Starting with "FRA"... We've definitely got a few ports in the Caribbean that should be assigned the ISO 3 codes of their respective countries or territories. 
 
 ```{r}
 # Get french ports
@@ -457,14 +419,174 @@ fra_ports_fix <- fra_ports %>%
                               anchorage_name %in% c("MAF-2", "ST MARTIN") ~ "MAF",
                               anchorage_name %in% c("MTQ-16", "SCHOELCHER") ~ "MTQ")) %>%
   st_drop_geometry()
+```
+
+And repeat the process for "NLD"... Same deal, there are some overseas territories of the Netherlands that should have been assigned the ISO 3 codes of the administering territory. 
+
+```{r}
+# Get french ports
+nld_ports <- other_ports_sf %>%
+  dplyr::filter(iso3 == "NLD")
+
+# Take a look - We've definitely got three countries in the Caribbean that shouldn't be labeled as "FRA"
+nld_port_plot <- ggplot()+
+  geom_sf(data = nld_ports, aes(color = category), size = 1)+
+  theme_basic()+
+  map_layer_moll+
+  guides(color = guide_legend(title = "Anchorage", nrow = 3),
+         fill = "none")
+
+nld_port_plot
+```
+
+```{r}
+# Fix the mislabeled ports
+# ST MAARTEN is in Saint Maarten
+# The rest look to be in the Netherlands
+nld_ports_fix <- nld_ports %>%
+  dplyr::filter(lat < 20 & lon < -50) %>%
+  mutate(iso3_fixed = case_when(anchorage_name == c("ST MAARTEN") ~ "SXM",
+                                T ~ "NLD")) %>%
+  st_drop_geometry()
+```
+
+```{r}
+# Combine
+ports_fix <- fra_ports_fix %>%
+  bind_rows(nld_ports_fix)
 
 # Now add these back to the port lookup file
 other_ports_out <- other_ports_sf %>%
-  left_join(fra_ports_fix %>% dplyr::select(anchorage_id, iso3_fixed), by = "anchorage_id") %>%
+  left_join(ports_fix %>% dplyr::select(anchorage_id, iso3_fixed), by = "anchorage_id") %>%
   mutate(iso3_fixed = ifelse(!is.na(iso3_fixed), iso3_fixed, iso3))
 
 # Save locally too
 save(other_ports_out, file = file.path(prj_cachalote_dir, "data", "processed", "origin_and_destination_ports.Rdata"))
+```
+
+## Add port corrections to voyage table
+
+```{r}
+# Correct ports
+dom_voyages_fixed <- dom_voyages %>%
+  left_join(ports_fix %>% dplyr::select(anchorage_id, start_iso3_fixed = iso3_fixed), by = c("start_anchorage_id" = "anchorage_id")) %>%
+  left_join(ports_fix %>% dplyr::select(anchorage_id, end_iso3_fixed = iso3_fixed), by = c("end_anchorage_id" = "anchorage_id")) %>%
+  mutate(start_iso3 = ifelse(!is.na(start_iso3_fixed), start_iso3_fixed, start_iso3),
+         end_iso3 = ifelse(!is.na(end_iso3_fixed), end_iso3_fixed, end_iso3)) %>%
+  dplyr::select(-start_iso3_fixed, -end_iso3_fixed)
+```
+
+## Add more vessel details
+
+Before we upload the corrected voyage table to Bigquery, let's also add in some additional vessel classifications from the national AIS data where possible. 
+
+```{r}
+# Load file of domestic AIS data
+load(file = file.path(prj_cachalote_dir, "data", "processed", "ais", "Dominica_AIS_2012_2019_processed.Rdata")) 
+
+# Get vessel types and categories
+ais_vessel_info <- ais_dat_dist %>%
+  st_drop_geometry() %>%
+  distinct(mmsi, category) %>%
+  mutate(ssvid = as.character(mmsi)) %>%
+  dplyr::select(-mmsi)
+
+# Figure out which have more than one category assigned to a mmsi number
+n_categories <- ais_vessel_info %>%
+  group_by(ssvid) %>%
+  summarize(n = n(),
+            categories = paste0(category, collapse = ", "))
+
+# We just have two that have multiple categories. We'll make them merchant vessels. 
+mult_categories <- n_categories %>%
+  dplyr::filter(n > 1)
+
+# Create output vessel type table
+ais_vessel_info_keep <- ais_vessel_info %>%
+  mutate(category = ifelse(ssvid %in% mult_categories$ssvid, "merchant", category)) %>%
+  distinct(ssvid, category)
+```
+
+```{r}
+# Add to vessel table
+dom_voyages_final <- dom_voyages_fixed %>%
+  left_join(ais_vessel_info_keep, by = c("ssvid"))
+```
+
+## Upload corrected voyage table
+
+```{r}
+# Table to save output
+voyage_table_fixed <- bq_table(project = bq_project,
+                               table = "dominica_voyages_2017_2022_fixed",
+                               dataset = "dominica")
+
+if(bq_table_exists(voyage_table_fixed)){
+  bq_table_delete(voyage_table_fixed)
+}else{
+  bq_table_create(voyage_table_fixed)
+}
+
+# Upload
+voyage_table_fixed %>%
+  bq_table_upload(fields = dom_voyages_final, values = dom_voyages_final,
+                  write_disposition = 'WRITE_TRUNCATE')
+
+# Save locally too
+write_csv(dom_voyages_final, file.path(prj_cachalote_dir, "data", "processed", "dominica_voyages_gfw_2017_2022_fixed.csv"))
+```
+
+# Summarize
+
+First, lets figure out how many inbound, outgoing, and domestic voyages we have between 2017 and 2022. Then let's make sure we don't have any voyages that don't meet one of these three classifications.  
+
+## Overall trip types
+
+```{r}
+# 2,068 domestic voyages (starting and ending in Dominica)
+domestic_voyages <- dom_voyages %>%
+  dplyr::filter(start_is_DMA & end_is_DMA) %>%
+  distinct(trip_id)
+
+# 10,837 inbound voyages
+in_voyages <- dom_voyages %>%
+  dplyr::filter(!start_is_DMA & end_is_DMA) %>%
+  distinct(trip_id)
+
+# 11,078 outgoing voyages
+out_voyages <- dom_voyages %>%
+  dplyr::filter(start_is_DMA & !end_is_DMA) %>%
+  distinct(trip_id)
+
+# 23,983 total voyages
+all_voyages <- c(domestic_voyages$trip_id, in_voyages$trip_id, out_voyages$trip_id)
+
+# Are we missing any? No. 
+other_voyages <- dom_voyages %>%
+  dplyr::filter(!(trip_id %in% all_voyages)) %>%
+  distinct(trip_id)
+
+# Do we have duplicate rows in our voyage table? No. 
+n_rows_per_trip <- dom_voyages %>%
+  group_by(trip_id, ssvid) %>%
+  summarize(n_rows = n()) %>%
+  dplyr::filter(n_rows > 1)
+```
+
+```{r}
+# Let's do some simple classifications for our voyages: 
+voyage_classification <- dom_voyages %>%
+  mutate(classification = case_when(trip_id %in% domestic_voyages$trip_id ~ "Domestic",
+                                    trip_id %in% in_voyages$trip_id ~ "Inbound",
+                                    trip_id %in% out_voyages$trip_id ~ "Outbound")) %>%
+  group_by(classification) %>%
+  summarize(n_voyages = n(),
+            average_duration = mean(voyage_duration_h),
+            total_duration = sum(voyage_duration_h),
+            min_duration = min(voyage_duration_h),
+            max_duration = max(voyage_duration_h))
+
+head(voyage_classification)
 ```
 
 ## Frequency of voyages by start/end country

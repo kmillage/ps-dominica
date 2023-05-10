@@ -79,30 +79,6 @@ save_maps <- function(plot_name, file_name){
 
 ### Plots ----------------------------------------------------------------------
 # Basic plot theme 
-# theme_basic <- function(){
-#   
-#   graph_theme <- ggplot2::theme_minimal() + 
-#     ggplot2::theme(panel.border = element_blank(), 
-#                    #panel.background = element_rect(fill = "#f7f7f7", color = NA), 
-#                    panel.background = element_rect(fill = "transparent",colour = NA), 
-#                    plot.background = element_rect(fill = "transparent",colour = NA),
-#                    panel.grid.minor=element_blank(),
-#                    legend.position = "bottom", 
-#                    legend.box = "vertical", 
-#                    legend.key.height = unit(3, "mm"), 
-#                    legend.key.width = unit(20, "mm"),
-#                    legend.title.align = 0.5,
-#                    text = element_text(family = "Roboto", color = "#363c4c", size = 8),
-#                    legend.text = element_text(family = "Roboto", color = "#848b9b", size = 8), 
-#                    legend.title = element_text(family = "Roboto Bold", color = "#363c4c", size = 8), 
-#                    plot.title = element_text(family = "Roboto Bold", color = "#363c4c", size = 10), 
-#                    plot.subtitle = element_text(family = "Roboto", color = "#363c4c", size = 10), 
-#                    axis.title = element_text(family = "Roboto Bold", color = "#363c4c", size = 8), 
-#                    axis.text = element_text(family = "Roboto", color = "#848b9b", size = 6),
-#                    strip.text = element_text(family = "Roboto Bold", color = "#363c4c", size = 8))
-#                    #axis.title.y = element_text(angle=0, vjust = 0.5))
-# }
-
 theme_basic <- function(){
   
   graph_theme <- ggplot2::theme_minimal() + 

@@ -391,9 +391,10 @@ trips_coming_in_sql <- "WITH
       end_iso3,
       end_anchorage_id,
       end_anchorage_name,
-      end_is_DMA
+      end_is_DMA,
+      category
     FROM
-      `emlab-gcp.dominica.dominica_voyages_2017_2022`
+      `emlab-gcp.dominica.dominica_voyages_2017_2022_fixed`
     WHERE
       start_is_DMA = FALSE 
       AND end_is_DMA
@@ -466,6 +467,7 @@ SELECT
   ssvid,
   year,
   vessel_type,
+  category,
   start_iso3,
   start_anchorage_id,
   start_anchorage_name,
@@ -713,9 +715,10 @@ trips_going_out_sql <- "WITH
       end_iso3,
       end_anchorage_id,
       end_anchorage_name,
-      end_is_DMA
+      end_is_DMA,
+      category
     FROM
-      `emlab-gcp.dominica.dominica_voyages_2017_2022`
+      `emlab-gcp.dominica.dominica_voyages_2017_2022_fixed`
     WHERE
       start_is_DMA 
       AND end_is_DMA = FALSE
@@ -788,6 +791,7 @@ SELECT
   ssvid,
   year,
   vessel_type,
+  category,
   start_iso3,
   start_anchorage_id,
   start_anchorage_name,
