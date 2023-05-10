@@ -17,8 +17,8 @@ load(here::here("results", "reserve_boundaries.Rdata"))
 
 # Load voyage data we need
 dom_voyages <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "dominica_voyages_gfw_2017_2022.csv")) # All voyages - 26,241
-trips_in <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "trips_in_summary_table.csv"))
-trips_out <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "trips_out_summary_table.csv"))
+trips_in <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "trips_in_summary_table_v2.csv"))
+trips_out <- read_csv(file.path(prj_cachalote_dir, "data", "processed", "trips_out_summary_table_v2.csv"))
 
 # Get anchorage centroids 
 load(file.path(prj_cachalote_dir, "data", "processed", "dominica_anchorage_centroids_gfw.Rdata"))
@@ -44,10 +44,6 @@ abs(length(inbound_voyages_pos) - length(inbound_voyages_all))
 inbound_voyages_nas <- trips_in %>% dplyr::filter(is.na(lat_start) | is.na(lon_start) | is.na(lat_end) | is.na(lon_end)) %>%
   distinct(trip_id) %>% pull()
 
-# Good inbound trips
-inbound_voyages_good <- trips_in %>% dplyr::filter(!is.na(lat_start) & !is.na(lon_start) & !is.na(lat_end) & !is.na(lon_end)) %>%
-  distinct(trip_id) %>% pull()
-
 # Determine the proportion of trips that would be affected by each reserve scenario
 inbound_prop_affected <- trips_in %>%
   dplyr::filter(trip_id %in% inbound_voyages_good) %>%
@@ -58,6 +54,12 @@ inbound_prop_affected <- trips_in %>%
   gather()
 
 head(inbound_prop_affected)
+
+# Good inbound trips
+inbound_voyages_good <- trips_in %>% 
+  dplyr::filter(!is.na(lat_start) & !is.na(lon_start) & !is.na(lat_end) & !is.na(lon_end)) %>%
+  dplyr::filter(!is.na(scenario)) %>%
+  distinct(trip_id) %>% pull()
 ```
 
 ## Outbound voyages
@@ -74,10 +76,6 @@ abs(length(outbound_voyages_pos) - length(outbound_voyages_all))
 outbound_voyages_nas <- trips_out %>% dplyr::filter(is.na(lat_start) | is.na(lon_start) | is.na(lat_end) | is.na(lon_end)) %>%
   distinct(trip_id) %>% pull()
 
-# Good outbound trips
-outbound_voyages_good <- trips_out %>% dplyr::filter(!is.na(lat_start) & !is.na(lon_start) & !is.na(lat_end) & !is.na(lon_end)) %>%
-  distinct(trip_id) %>% pull()
-
 # Determine the proportion of trips that would be affected by each reserve scenario
 outbound_prop_affected <- trips_out %>%
   dplyr::filter(trip_id %in% outbound_voyages_good) %>%
@@ -88,6 +86,12 @@ outbound_prop_affected <- trips_out %>%
   gather()
 
 head(outbound_prop_affected)
+
+# Good outbound trips
+outbound_voyages_good <- trips_out %>% 
+  dplyr::filter(!is.na(lat_start) & !is.na(lon_start) & !is.na(lat_end) & !is.na(lon_end)) %>%
+  dplyr::filter(!is.na(scenario)) %>%
+  distinct(trip_id) %>% pull()
 ```
 
 # Distance of start/end positions to anchorage coordinates and grouped centroids
@@ -99,6 +103,7 @@ We'll then filter for trips that
 ## Inbound trips
 
 ```{r}
+# Calculate distance for our good trips
 trips_in_dist <- trips_in %>%
   dplyr::filter(trip_id %in% inbound_voyages_good) %>%
   dplyr::distinct(trip_id, vessel_type, lat_end, lon_end, end_anchorage_id) %>%
@@ -109,22 +114,24 @@ trips_in_dist <- trips_in %>%
 
 # Get bad trips
 bad_trips_in <- trips_in_dist %>%
-  dplyr::filter(dist_from_port > 10) %>%
+  dplyr::filter(dist_from_port > 5) %>%
   pull(trip_id)
 
 # Percentage of trips being excluded
-percent_bad_in <- (length(bad_trips_in)+length(inbound_voyages_nas))/length(inbound_voyages_all)
+percent_bad_in <- length(bad_trips_in)/length(inbound_voyages_good)
+trips_remaining_in <- length(inbound_voyages_good) - length(bad_trips_in)
 ```
 
 ```{r}
 # Make 
 trips_in_dist_plot <- trips_in_dist %>%
-  dplyr::filter(!(trip_id %in% bad_trips_in)) %>%
+  dplyr::filter(!trip_id %in% bad_trips_in) %>%
   ggplot()+
   geom_density_ridges(aes(x = dist_from_port_centroid, y = vessel_type), alpha = 0.5, fill = "blue")+
   geom_density_ridges(aes(x = dist_from_port, y = vessel_type), alpha = 0.5, fill = "red")+
   theme_basic()+
-  labs(x = "Distance between last AIS position and anchorage (km, red) or anchorage centroid (km, blue)", y = "Vessel type", title = "Inbound trips: Last AIS position relative to anchorage coordinates")
+  labs(x = "Distance between last AIS position and anchorage (km, red) or anchorage centroid (km, blue)", y = "Vessel type", 
+       title = paste0("Inbound trips: Last AIS position relative to anchorage coordinates (N = ",  format(trips_remaining_in, big.mark = ","), ")"))
 
 ggsave(file.path(prj_cachalote_dir, "figures", "inbound_trips_end_dist_from_port.png"), trips_in_dist_plot, height = 6, width = 7.5)
 
@@ -144,11 +151,12 @@ trips_out_dist <- trips_out %>%
 
 # Get bad trips
 bad_trips_out <- trips_out_dist %>%
-  dplyr::filter(dist_from_port > 20) %>%
+  dplyr::filter(dist_from_port > 10) %>%
   pull(trip_id)
 
 # Percentage of trips being excluded
-percent_bad_out <- (length(bad_trips_out)+length(outbound_voyages_nas))/length(outbound_voyages_all)
+percent_bad_out <- length(bad_trips_out)/length(outbound_voyages_good)
+trips_remaining_out <- length(outbound_voyages_good) - length(bad_trips_out)
 ```
 
 ```{r}
@@ -159,9 +167,21 @@ trips_out_dist_plot <- trips_out_dist %>%
   geom_density_ridges(aes(x = dist_from_port_centroid, y = vessel_type), alpha = 0.5, fill = "blue")+
   geom_density_ridges(aes(x = dist_from_port, y = vessel_type), alpha = 0.5, fill = "red")+
   theme_basic()+
-  labs(x = "Distance between first AIS position and anchorage (km, red) or anchorage centroid (km, blue)", y = "Vessel type", title = "Outbound trips: First AIS position relative to anchorage coordinates")
+  labs(x = "Distance between first AIS position and anchorage (km, red) or anchorage centroid (km, blue)", y = "Vessel type", 
+       title = paste0("Outbound trips: First AIS position relative to anchorage coordinates (N = ",  format(trips_remaining_out, big.mark = ","), ")"))
 
 ggsave(file.path(prj_cachalote_dir, "figures", "outbound_trips_end_dist_from_port.png"), trips_out_dist_plot, height = 6, width = 7.5)
 
 trips_out_dist_plot
 ```
+
+# Make final list of good trips
+
+```{r}
+good_trips <- c(inbound_voyages_good[!inbound_voyages_good %in% bad_trips_in],
+                outbound_voyages_good[!outbound_voyages_good %in% bad_trips_out])
+
+save(good_trips,
+     file = file.path(prj_cachalote_dir, "data", "processed", "good_trips.Rdata"))
+```
+
