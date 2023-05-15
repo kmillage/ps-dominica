@@ -294,7 +294,7 @@ other_anchorage_sql <- 'WITH
         SELECT DISTINCT
           start_anchorage_id
         FROM
-          `emlab-gcp.dominica.dominica_voyages_2017_2022`
+          `emlab-gcp.dominica.dominica_voyages_2017_2022_raw`
         WHERE
           start_is_DMA = FALSE
       )
@@ -309,7 +309,7 @@ other_anchorage_sql <- 'WITH
         SELECT DISTINCT
           end_anchorage_id
         FROM
-          `emlab-gcp.dominica.dominica_voyages_2017_2022`
+          `emlab-gcp.dominica.dominica_voyages_2017_2022_raw`
         WHERE
           end_is_DMA = FALSE
       )
@@ -544,17 +544,17 @@ First, lets figure out how many inbound, outgoing, and domestic voyages we have 
 
 ```{r}
 # 2,068 domestic voyages (starting and ending in Dominica)
-domestic_voyages <- dom_voyages %>%
+domestic_voyages <- dom_voyages_final %>%
   dplyr::filter(start_is_DMA & end_is_DMA) %>%
   distinct(trip_id)
 
 # 10,837 inbound voyages
-in_voyages <- dom_voyages %>%
+in_voyages <- dom_voyages_final %>%
   dplyr::filter(!start_is_DMA & end_is_DMA) %>%
   distinct(trip_id)
 
 # 11,078 outgoing voyages
-out_voyages <- dom_voyages %>%
+out_voyages <- dom_voyages_final %>%
   dplyr::filter(start_is_DMA & !end_is_DMA) %>%
   distinct(trip_id)
 
@@ -562,12 +562,12 @@ out_voyages <- dom_voyages %>%
 all_voyages <- c(domestic_voyages$trip_id, in_voyages$trip_id, out_voyages$trip_id)
 
 # Are we missing any? No. 
-other_voyages <- dom_voyages %>%
+other_voyages <- dom_voyages_final %>%
   dplyr::filter(!(trip_id %in% all_voyages)) %>%
   distinct(trip_id)
 
 # Do we have duplicate rows in our voyage table? No. 
-n_rows_per_trip <- dom_voyages %>%
+n_rows_per_trip <- dom_voyages_final %>%
   group_by(trip_id, ssvid) %>%
   summarize(n_rows = n()) %>%
   dplyr::filter(n_rows > 1)
@@ -575,7 +575,7 @@ n_rows_per_trip <- dom_voyages %>%
 
 ```{r}
 # Let's do some simple classifications for our voyages: 
-voyage_classification <- dom_voyages %>%
+voyage_classification <- dom_voyages_final %>%
   mutate(classification = case_when(trip_id %in% domestic_voyages$trip_id ~ "Domestic",
                                     trip_id %in% in_voyages$trip_id ~ "Inbound",
                                     trip_id %in% out_voyages$trip_id ~ "Outbound")) %>%
@@ -593,7 +593,7 @@ head(voyage_classification)
 
 ```{r}
 # Summarize by start/end - country level only
-freq_voyages_by_iso3 <- dom_voyages %>%
+freq_voyages_by_iso3 <- dom_voyages_final %>%
  mutate(classification = case_when(trip_id %in% domestic_voyages$trip_id ~ "Domestic",
                                     trip_id %in% in_voyages$trip_id ~ "Inbound",
                                     trip_id %in% out_voyages$trip_id ~ "Outbound")) %>%
@@ -605,7 +605,7 @@ freq_voyages_by_iso3 <- dom_voyages %>%
 
 ```{r}
 # Summarize by start/end - country level only
-freq_voyages_by_iso3_and_year <- dom_voyages %>%
+freq_voyages_by_iso3_and_year <- dom_voyages_final %>%
   mutate(classification = case_when(trip_id %in% domestic_voyages$trip_id ~ "Domestic",
                                     trip_id %in% in_voyages$trip_id ~ "Inbound",
                                     trip_id %in% out_voyages$trip_id ~ "Outbound")) %>%
@@ -616,14 +616,16 @@ freq_voyages_by_iso3_and_year <- dom_voyages %>%
 
 ```{r}
 # Plot flow diagram of voyages to Dominica
-links_in <- freq_voyages_by_iso3 %>%
+links_in <- freq_voyages_by_iso3_and_year %>%
+  dplyr::filter(start_year == 2022) %>%
   ungroup() %>%
   dplyr::filter(start_iso3 != "DMA" & end_iso3 == "DMA") %>%
   dplyr::select(source = start_iso3, target = end_iso3, value = n_voyages)
 links_in$source <- paste(links_in$source, " ", sep="")
 
 # Plot flow diagram of total landings made in each country that go toward each destination
-links_out <- freq_voyages_by_iso3 %>%
+links_out <- freq_voyages_by_iso3_and_year %>%
+  dplyr::filter(start_year == 2022) %>%
   ungroup() %>%
   dplyr::filter(start_iso3 == "DMA") %>%
   dplyr::select(source = start_iso3, target = end_iso3, value = n_voyages)
@@ -672,7 +674,7 @@ sn
 
 ```{r}
 # Summarize by start/end - by port are within Dominica
-freq_voyages_by_iso3_and_port <- dom_voyages %>%
+freq_voyages_by_iso3_and_port <- dom_voyages_final %>%
   mutate(start_anchor_group = case_when(start_anchorage_name %in% c("POINTE MICHEL", "ROSEAU") ~ "Roseau/Pointe Michel",
                                         start_anchorage_name == "PORTSMOUTH" ~ "Portsmouth",
                                         start_anchorage_name %in% c("DMA-4", "SAINT JOSEPH") ~ "Saint Joseph/Salisbury"),
@@ -693,6 +695,7 @@ freq_voyages_by_iso3_and_port <- freq_voyages_by_iso3_and_port %>%
 ```{r}
 # Plot flow diagram of voyages to Dominica
 links_in_p <- freq_voyages_by_iso3_and_port %>%
+  dplyr::filter(start_year == 2022) %>%
   ungroup() %>%
   dplyr::filter(end %in% c("Roseau/Pointe Michel", "Saint Joseph/Salisbury", "Portsmouth")) %>%
   dplyr::select(source = start, target = end, value = n_voyages)
@@ -700,6 +703,7 @@ links_in_p$source <- paste(links_in_p$source, " ", sep="")
 
 # Plot flow diagram of total landings made in each country that go toward each destination
 links_out_p <- freq_voyages_by_iso3_and_port %>%
+  dplyr::filter(start_year == 2022) %>%
   ungroup() %>%
   dplyr::filter(start %in% c("Roseau/Pointe Michel", "Saint Joseph/Salisbury", "Portsmouth")) %>%
   dplyr::select(source = start, target = end, value = n_voyages)

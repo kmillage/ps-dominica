@@ -78,7 +78,7 @@ whales_and_reserves_plot_by_year <- ggplot()+
   geom_sf(data = whales_recent, size = 0.02, fill = "black")+
   geom_sf(data = reserve_boundaries_sf, aes(color = rev(scenario_name)), alpha = 1, fill = NA, size = 0.5)+
   coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)+
-  facet_grid(year~scenario_name)+
+  facet_grid(scenario_name ~ year)+
   theme_basic()+
   guides(color = "none")+
   labs(title = "Potential reserve boundaries overlaid on sperm whale sightings (2014 - 2018)")
@@ -143,8 +143,9 @@ save_plots(file_name = file.path(prj_cachalote_dir, "figures", "whale_sightings_
 whales_density_lat_lon
 ```
 
+# Results - Version 1
 
-# Find whale sightings inside the reserve area(s)
+## Find whale sightings inside the reserve area(s)
 
 ```{r}
 # Determine which reserve(s) each observation would fall within
@@ -159,7 +160,7 @@ outside_whales <- where_be_whales %>%
   dplyr::filter(is.na(scenario))
 ```
 
-# Summarize by Reserve Design and Year
+## Summarize by Reserve Design and Year
 
 ```{r}
 # Get totals by year
@@ -228,60 +229,15 @@ save_plots(file_name = file.path(prj_cachalote_dir, "figures", "prop_whale_sight
 tradeoff_plot
 ```
 
-# ```{r}
-# # Plot reserve design versus proportion of sightings
-# tradeoff_plot_bar <- summary_by_year %>%
-#   ggplot()+
-#   aes(x = year, y = value, fill = scenario)+
-#   geom_bar(position = "dodge", stat = "identity", alpha = 0.4)+
-#   scale_y_continuous(limits = c(0,1))+
-#   scale_fill_gradient(breaks = c(1,2,3), limits = c(1,3))+
-#   theme_basic()+
-#   facet_wrap(~ obs_type, ncol = 1)+
-#   labs(x = "Year", y = "Prop. of observations", title = "Proportion of sperm whale sightings within potential reserves (2005 - 2018)")+
-#   guides(fill = guide_colorbar(title = "Scenario"))
-# 
-# ggsave(file.path(prj_cachalote_dir, "figures", "prop_whale_sightings_by_reserve_and_year_bar.png"), tradeoff_plot_bar, width = 7.5, height = 10)
-# 
-# tradeoff_plot_bar
-# ```
-
-# ```{r}
-# # Plot reserve design versus proportion of sightings
-# whales_by_area_sightings_plot <- summary_by_year %>%
-#   rename(inside = value) %>%
-#   mutate(outside = 1-inside) %>%
-#   gather("location", "prop", c(inside, outside)) %>%
-#   mutate(scenario_name = paste0("Scenario ", scenario)) %>%
-#   dplyr::filter(year > 2013) %>%
-#   dplyr::filter(obs_type == "sightings") %>%
-#   ggplot()+
-#   aes(x = year, y = prop, fill = fct_rev(location))+
-#   geom_bar(position = "stack", stat = "identity", alpha = 0.7)+
-#   scale_fill_manual(values = rev(c("#3182bd", "darkgrey")))+
-#   theme_basic()+
-#   facet_wrap(~ scenario_name, ncol = 1)+
-#   labs(x = "Year", y = "Prop. of observations", title = "")+
-#   guides(fill = guide_legend(title = "Location", reverse = T))
-# 
-# ggsave(file.path(prj_cachalote_dir, "figures", "prop_whale_sightings_inside_outside.png"), whales_by_area_sightings_plot, width = 4, height = 9)
-# 
-# whales_by_area_sightings_plot
-# ```
-
-# Summarize by Other Areas
+## Summarize by Other Areas
 
 ```{r}
-# # Determine which other areas each observation would fall within
-# where_be_whales_outside <- st_join(whales, other_areas_sf) %>%
-#   dplyr::filter(!is.na(name))
-
 # Determine which other areas each observation would fall within
 where_be_whales_outside <- st_join(outside_whales, other_areas_sf)
 
 # Summarize by year and reserve design
 summary_by_year_outside <- where_be_whales_outside %>%
-  dplyr::filter(!is.na(name)) %>%
+  mutate(name = ifelse(is.na(name), "Other areas", name)) %>%
   st_drop_geometry() %>%
   group_by(year, name) %>%
   summarize(n_sightings = n_distinct(obs),
@@ -306,7 +262,7 @@ other_table <- summary_by_year_outside %>%
   distinct(name, year, value) %>%
   mutate(value = round(value*100, 2)) %>%
   group_by(name) %>%
-  mutate(avg = mean(value)) %>%
+  mutate(avg = round(mean(value), 2)) %>%
   spread(year, value) %>%
   relocate(avg, .after = `2018`)
 
@@ -339,4 +295,153 @@ save_plots(file_name = file.path(prj_cachalote_dir, "figures", "other_areas_and_
 whales_and_other_areas_plot
 ```
 
+# Explore results excluding Roseau hotspot 
 
+There's a major concentration of sightings right by Roseau... Like an order of magnitude greater than most other areas. This seems suspicious. 
+
+```{r}
+# Bin sightings into lat/lon bins
+whales_recent_binned <- whales_recent %>%
+  mutate(lat_bin = (floor(lat/0.01)*0.01) + 0.005,
+         lon_bin = (floor(lon/0.01)*0.01) + 0.005) %>%
+  group_by(lon_bin, lat_bin) %>%
+  summarize(count = n())
+
+# Which bins have more than 200 sightings
+potential_bad_whales <- whales_recent_binned %>%
+  dplyr::filter(count > 200) %>%
+  distinct(lat_bin, lon_bin)
+
+# Coordinates to filter by 
+lon_lim <- c(potential_bad_whales$lon_bin-0.005, potential_bad_whales$lon_bin+0.005)
+lat_lim <- c(potential_bad_whales$lat_bin-0.005, potential_bad_whales$lat_bin+0.005)
+
+# Now let's get those bad entries
+bad_whales <- whales_recent %>%
+  dplyr::filter(lat >= lat_lim[1] & lat <= lat_lim[2] & lon >= lon_lim[1] & lon <= lon_lim[2])
+
+# Plot to check that we've got the right ones - Yep
+bad_whales_plot <- ggplot()+
+  geom_sf(data = bad_whales, size = 0.02, fill = "black")+
+  geom_sf(data = dominica_sf_moll, aes(group = name), color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = reserve_boundaries_sf, aes(color = rev(scenario_name)), alpha = 1, fill = NA, size = 0.5)+
+  coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)+
+  theme_basic()+
+  guides(color = "none")+
+  labs(title = "")
+
+bad_whales_plot
+```
+
+# ------------------------------------------------------------------------------
+
+Now let's recreate our results if we remove those whales... 
+
+# Results - Version 2
+
+This version has the whales right off of Roseau removed
+
+## Find whale sightings inside the reserve area(s)
+
+```{r}
+# Good whales
+good_whales_recent <- whales_recent %>%
+  dplyr::filter(!obs %in% bad_whales$obs)
+
+# Determine which reserve(s) each observation would fall within
+good_where_be_whales <- st_join(good_whales_recent, reserve_boundaries_sf)
+
+# Get sightings inside reserve
+good_reserve_whales <- good_where_be_whales %>%
+  dplyr::filter(!is.na(scenario))
+
+# Get all other sightings
+good_outside_whales <- good_where_be_whales %>%
+  dplyr::filter(is.na(scenario))
+```
+
+## Summarize by Reserve Design and Year
+
+```{r}
+# Get totals by year
+good_totals_by_year <- good_whales_recent %>%
+  st_drop_geometry() %>%
+  group_by(year) %>%
+  summarize(n_sightings_total = n_distinct(obs),
+            n_adults_total = sum(adults, na.rm = T),
+            n_calves_total = sum(calves, na.rm = T),
+            n_whales_total = sum(total, na.rm = T))
+  
+# Summarize by year and reserve design
+good_summary_by_year <- good_reserve_whales %>%
+  st_drop_geometry() %>%
+  group_by(year, scenario, scenario_name, area_km2) %>%
+  summarize(n_sightings = n_distinct(obs),
+            n_adults = sum(adults, na.rm = T),
+            n_calves = sum(calves, na.rm = T),
+            n_whales = sum(total, na.rm = T)) %>%
+  ungroup() %>%
+  left_join(good_totals_by_year, by = "year") %>%
+  mutate(prop_sightings = n_sightings/n_sightings_total,
+         prop_adults = n_adults/n_adults_total,
+         prop_calves = n_calves/n_calves_total,
+         prop_whales = n_whales/n_whales_total) %>%
+  dplyr::select(year, scenario, scenario_name, area_km2, contains("prop")) %>%
+  gather("obs_type", "value", contains("prop")) %>%
+  mutate(obs_type = str_replace(obs_type, "prop_", ""))
+```
+
+## Output Table 
+
+```{r}
+good_out_table <- good_summary_by_year %>%
+  dplyr::filter(obs_type == "sightings") %>%
+  distinct(scenario, year, value) %>%
+  mutate(value = round(value*100, 2)) %>%
+  group_by(scenario) %>%
+  mutate(avg = mean(value)) %>%
+  spread(year, value) %>%
+  relocate(avg, .after = `2018`)
+
+head(good_out_table)
+```
+
+## Summarize by Other Areas
+
+```{r}
+# Determine which other areas each observation would fall within
+good_where_be_whales_outside <- st_join(good_outside_whales, other_areas_sf)
+
+# Summarize by year and reserve design
+good_summary_by_year_outside <- good_where_be_whales_outside %>%
+  mutate(name = ifelse(is.na(name), "Other areas", name)) %>%
+  st_drop_geometry() %>%
+  group_by(year, name) %>%
+  summarize(n_sightings = n_distinct(obs),
+            n_adults = sum(adults, na.rm = T),
+            n_calves = sum(calves, na.rm = T),
+            n_whales = sum(total, na.rm = T)) %>%
+  ungroup() %>%
+  left_join(good_totals_by_year, by = "year") %>%
+  mutate(prop_sightings = n_sightings/n_sightings_total,
+         prop_adults = n_adults/n_adults_total,
+         prop_calves = n_calves/n_calves_total,
+         prop_whales = n_whales/n_whales_total) %>%
+  dplyr::select(year, name, contains("prop")) %>%
+  gather("obs_type", "value", contains("prop")) %>%
+  mutate(obs_type = str_replace(obs_type, "prop_", "")) 
+```
+
+```{r}
+# Make summary table
+good_other_table <- good_summary_by_year_outside %>%
+  dplyr::filter(obs_type == "sightings") %>%
+  distinct(name, year, value) %>%
+  mutate(value = round(value*100, 2)) %>%
+  group_by(name) %>%
+  mutate(avg = round(mean(value), 2)) %>%
+  spread(year, value) %>%
+  relocate(avg, .after = `2018`)
+
+head(good_other_table)
+```

@@ -12,7 +12,7 @@ source(here::here("common.R"))
 nm <- 1852
 
 # Lat/lon CRS
-prj_latlon <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+prj_latlon <- 4326
 
 # Plotting boundaries for nice view of Dominica's West Coast
 plot_bbox <- data.frame("long"=c(-61,-61,-61.8,-61.8,-61),"lat"=c(15.75,15,15,15.75,15.75)) %>%
@@ -73,6 +73,49 @@ ggplot()+
   geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
   geom_sf(data = sl_sf_moll, aes(group = loc), fill = "black")+
   theme_basic()
+```
+
+# Create polygon of Dominica
+
+This polygon is really just for plotting. 
+
+```{r}
+# Create bounding box of 
+d = st_polygon(list(matrix(c(-61.2, 15.65, # NE
+                             -61.2, 15.19, # SE
+                             -61.5, 15.19, # SW
+                             -61.5, 15.65, # NW,
+                             -61.2, 15.65), # NE
+                             ncol = 2, byrow = T))) 
+  
+# Create simple feature
+d_sf_moll <- data.frame(1) %>%
+  mutate(geom = st_sfc(d)) %>%
+  st_as_sf() %>%
+  st_set_crs(st_crs(prj_latlon)) %>%
+  st_transform(crs = st_crs(prj_moll))
+
+# Plot to check
+ggplot()+
+  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = d_sf_moll, fill = "orange4", size = 0.2)+
+  theme_basic()
+```
+
+```{r}
+# Get difference for plotting
+dominica_sf_moll <- st_difference(d_sf_moll, dominica_eez_sf_moll) %>%
+  mutate(name = "Dominica") %>%
+  dplyr::select(name)
+
+# Plot to check
+ggplot()+
+  geom_sf(data = dominica_sf_moll, fill = "orange4", size = 0.2)+
+  theme_basic()
+
+# Save
+save(dominica_sf_moll,
+     file = file.path(prj_cachalote_dir, "data", "processed", "dominica_boundaries.Rdata"))
 ```
 
 # Reserve Boundaries
@@ -344,12 +387,13 @@ reserve_with_sl_sf_moll <- st_difference(reserve_sf_revised, sl_sf_moll) %>%
   
 # Plot 
 reserve_plot <- ggplot()+
-  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
-  geom_sf(data = reserve_with_sl_sf_moll, aes(group = scenario, fill = scenario), alpha = 0.3)+
+  geom_sf(data = dominica_eez_sf_moll, color = "black", fill = NA, size = 0.2)+
+  geom_sf(data = dominica_sf_moll, color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = reserve_with_sl_sf_moll, aes(color = fct_rev(factor(scenario))), alpha = 1, fill = NA)+
   geom_sf(data = NE_sf, size = 0.8)+
   geom_sf(data = SE_sf, size = 0.8)+
   theme_basic()+
-  guides(fill = guide_colorbar(title = "Scenario", title.position = "top"))+
+  guides(color = guide_legend(title = "Scenario", title.position = "top"))+
   coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)
 
 ggsave(file.path(prj_cachalote_dir, "figures", "potential_reserve_boundaries_map.png"), reserve_plot)
@@ -360,17 +404,20 @@ reserve_plot
 ```{r}
 # Plot 
 reserve_plot_tall <- ggplot()+
-  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
-  geom_sf(data = reserve_with_sl_sf_moll %>% mutate(scenario_name = paste0("Scenario ", scenario)), 
-          aes(group = scenario, fill = scenario), color = NA)+
+  geom_sf(data = dominica_eez_sf_moll, color = "black", fill = NA, size = 0.2)+
+  geom_sf(data = dominica_sf_moll, color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = reserve_with_sl_sf_moll, aes(color = fct_rev(factor(scenario))), fill = NA)+
   geom_sf(data = NE_sf, size = 0.8)+
   geom_sf(data = SE_sf, size = 0.8)+
   theme_basic()+
-  guides(fill = "none")+
+  guides(color = "none")+
   coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)+
-  facet_wrap(~scenario_name, ncol = 1)
+  facet_wrap(~scenario, ncol = 1)
 
-ggsave(file.path(prj_cachalote_dir, "figures", "potential_reserve_boundaries_tall_map.png"), reserve_plot_tall)
+save_plots(file_name = file.path(prj_cachalote_dir, "figures", "potential_reserve_boundaries_tall_map.png"), 
+           plot_name = reserve_plot_tall,
+           height_in = 9,
+           width_in = 9)
 
 reserve_plot_tall
 ```
@@ -401,50 +448,6 @@ save(reserve_boundaries_sf,
      plot_bbox,
      file = file.path(prj_cachalote_dir, "data", "processed", "reserve_boundaries.Rdata"))
 ```
-
-# ------------------------------------------------------------------------------
-
-# Create polygon of Dominica
-
-```{r}
-# Create bounding box of 
-d = st_polygon(list(matrix(c(-61.2, 15.65, # NE
-                             -61.2, 15.19, # SE
-                             -61.5, 15.19, # SW
-                             -61.5, 15.65, # NW,
-                             -61.2, 15.65), # NE
-                             ncol = 2, byrow = T))) 
-  
-# Create simple feature
-d_sf_moll <- data.frame(1) %>%
-  mutate(geom = st_sfc(d)) %>%
-  st_as_sf() %>%
-  st_set_crs(st_crs(prj_latlon)) %>%
-  st_transform(crs = st_crs(prj_moll))
-
-# Plot to check
-ggplot()+
-  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
-  geom_sf(data = d_sf_moll, fill = "orange4", size = 0.2)+
-  theme_basic()
-```
-
-```{r}
-# Get difference for plotting
-dominica_sf_moll <- st_difference(d_sf_moll, dominica_eez_sf_moll) %>%
-  mutate(name = "Dominica") %>%
-  dplyr::select(name)
-
-# Plot to check
-ggplot()+
-  geom_sf(data = dominica_sf_moll, fill = "orange4", size = 0.2)+
-  theme_basic()
-
-# Save
-save(dominica_sf_moll,
-     file = file.path(prj_cachalote_dir, "data", "processed", "dominica_boundaries.Rdata"))
-```
-
 
 # ------------------------------------------------------------------------------
 
@@ -493,14 +496,18 @@ load(file = file.path(prj_cachalote_dir, "data", "processed", "ais", "Dominica_A
 
 # Plot with overlay of potential reserve boundaries
 reserve_plot_w_ferry <- ggplot()+
-  geom_sf(data = dominica_eez_sf_moll, aes(group = mrgid), color = "black", fill = "grey", size = 0.2)+
+  geom_sf(data = dominica_eez_sf_moll, color = "black", fill = NA, size = 0.2)+
+  geom_sf(data = dominica_sf_moll, color = "black", fill = "grey", size = 0.2)+
   geom_sf(data = ferry_ais_positions %>% dplyr::filter(year > 2012), size = 0.05)+
-  geom_sf(data = reserve_with_sl_sf_moll, aes(group = scenario, fill = scenario), alpha = 0.3)+
+  geom_sf(data = reserve_with_sl_sf_moll, aes(color = fct_rev(factor(scenario))), fill = NA)+
   theme_basic()+
-  guides(fill = "none")+
+  guides(color = "none")+
   coord_sf(xlim = plot_bbox$xlim, ylim = plot_bbox$ylim)
 
-ggsave(file.path(prj_cachalote_dir, "figures", "potential_reserve_boundaries_with_ferry_map.png"), reserve_plot_w_ferry)
+save_plots(file_name = file.path(prj_cachalote_dir, "figures", "potential_reserve_boundaries_with_ferry_map.png"), 
+           plot_name = reserve_plot_w_ferry,
+           height_in = 9,
+           width_in = 9)
 
 reserve_plot_w_ferry
 ```
@@ -508,6 +515,7 @@ reserve_plot_w_ferry
 ```{r}
 # Get totals by year
 ferry_ais_positions_total <- ferry_ais_positions %>%
+  dplyr::filter(year > 2012) %>%
   st_drop_geometry() %>%
   group_by(year) %>%
   summarize(n_positions = n(),
@@ -515,6 +523,7 @@ ferry_ais_positions_total <- ferry_ais_positions %>%
 
 # Now get number of points in reserve by distance from shore
 ferry_ais_positions_reserve <- ferry_ais_positions %>%
+  dplyr::filter(year > 2012) %>%
   st_join(reserve_sf_buffer_test) %>%
   mutate(id = paste0(mmsi, "_", datetime)) %>%
   st_drop_geometry() %>%
@@ -532,7 +541,6 @@ ferry_ais_positions_all <- ferry_ais_positions_total %>%
 
 # Plot 
 ferry_positions_by_buffer <- ferry_ais_positions_all %>%
-  dplyr::filter(year > 2012) %>%
   mutate(`Shore buffer` = paste0(E_dist, " nm")) %>%
   ggplot()+
   aes(x = rev(E_dist), y = prop_positions_in_reserve*100, color = as.factor(year))+
@@ -545,7 +553,10 @@ ferry_positions_by_buffer <- ferry_ais_positions_all %>%
                      breaks = c(E_distances_to_explore/nm))+
   scale_color_brewer(type = "seq", palette = "RdPu", name = "Year")
 
-ggsave(file.path(prj_cachalote_dir, "figures", "ferry_transmissions_by_shore_buffer.png"), ferry_positions_by_buffer)
+save_plots(file_name = file.path(prj_cachalote_dir, "figures", "ferry_transmissions_by_shore_buffer.png"), 
+           plot_name = ferry_positions_by_buffer,
+           height_in = 9,
+           width_in = 9)
 
 ferry_positions_by_buffer
 ```
@@ -553,7 +564,6 @@ ferry_positions_by_buffer
 ```{r}
 # Plot 
 ferry_hours_by_buffer <- ferry_ais_positions_all %>%
-  dplyr::filter(year > 2012) %>%
   mutate(`Shore buffer` = paste0(E_dist, " nm")) %>%
   ggplot()+
   aes(x = rev(E_dist), y = prop_hours_in_reserve*100, color = as.factor(year))+
@@ -566,7 +576,10 @@ ferry_hours_by_buffer <- ferry_ais_positions_all %>%
                      breaks = c(E_distances_to_explore/nm))+
   scale_color_brewer(type = "seq", palette = "RdPu", name = "Year")
 
-ggsave(file.path(prj_cachalote_dir, "figures", "ferry_hours_by_shore_buffer.png"), ferry_hours_by_buffer)
+save_plots(file_name = file.path(prj_cachalote_dir, "figures", "ferry_hours_by_shore_buffer.png"), 
+           plot_name = ferry_hours_by_buffer,
+           height_in = 9,
+           width_in = 9)
 
 ferry_hours_by_buffer
 ```
@@ -585,7 +598,10 @@ ferry_plot_out <- cowplot::plot_grid(ferry_plot_combined,
                                      ncol = 1,
                                      rel_heights = c(1,0.3))
 
-ggsave(file.path(prj_cachalote_dir, "figures", "ferry_plots_combined.png"), ferry_plot_out, width = 10, height = 4)
+save_plots(file_name = file.path(prj_cachalote_dir, "figures", "ferry_plots_combined.png"), 
+           plot_name = ferry_plot_out,
+           height_in = 4,
+           width_in = 10)
 
 ferry_plot_out
 ```
